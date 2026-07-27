@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { COURSES, REGIONS, GRADE } from '../data/mock.js'
+import { COURSES, GRADE } from '../data/mock.js'
+import GangwonMap from '../components/GangwonMap.jsx'
 
 const CATEGORIES = ['전체', '자연', '해안']
 
@@ -18,41 +19,24 @@ export default function CoursesPage() {
       <h1 style={{ fontSize:30, fontWeight:800, letterSpacing:'-.8px', marginBottom:6 }}>안심 코스 큐레이션</h1>
       <p style={{ fontSize:16, color:'var(--text-sub)', marginBottom:22 }}>강원 18개 시군의 터널 노출도를 3등급으로 분류했어요. 지역을 골라 코스를 살펴보세요.</p>
 
-      <div style={{ display:'grid', gridTemplateColumns:'460px 1fr', gap:30, alignItems:'start' }}>
+      <div style={{ display:'grid', gridTemplateColumns:'520px 1fr', gap:30, alignItems:'start' }}>
         {/* 지역 맵 */}
-        <div style={{ background:'var(--bg-surface)', border:'1px solid var(--border-light)', borderRadius:22, padding:24, position:'sticky', top:80 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
-            <span style={{ fontSize:16, fontWeight:800, color:'var(--text-head)' }}>강원특별자치도</span>
+        <div style={{ position:'sticky', top:80 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+            <span style={{ display:'inline-block', background:'#fff', border:'1px solid var(--border-light)', boxShadow:'var(--shadow-sm)', borderRadius:99, padding:'8px 18px', fontSize:16, fontWeight:700, color:'var(--text-head)' }}>
+              강원 18개 시군 안심 등급
+            </span>
             <button onClick={() => setSelected(null)} style={{ background:'var(--bg-subtle)', color:'var(--text-sub)', fontWeight:700, fontSize:12.5, padding:'6px 12px', borderRadius:8, cursor:'pointer' }}>전체 보기</button>
           </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:7, marginBottom:18 }}>
-            {REGIONS.map(r => {
-              const m = GRADE[r.grade]
-              const isSel = selected === r.name
-              return (
-                <button key={r.name} onClick={() => setSelected(p => p === r.name ? null : r.name)}
-                  style={{
-                    gridColumn: r.col, gridRow: r.row, aspectRatio:'1', borderRadius:11,
-                    background: isSel ? '#157A8C' : m.bg,
-                    border: `1.5px solid ${isSel ? '#0E5E6E' : m.border}`,
-                    color: isSel ? '#fff' : m.color,
-                    display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2,
-                    cursor:'pointer', transition:'transform .12s',
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.transform='scale(1.06)'}
-                  onMouseLeave={e => e.currentTarget.style.transform='scale(1)'}
-                >
-                  <span style={{ fontSize:12, fontWeight:800 }}>{r.name}</span>
-                  <span style={{ fontSize:10, opacity:.75 }}>터널 {r.tunnels}</span>
-                </button>
-              )
-            })}
+          <div style={{ marginBottom:48 }}>
+            <GangwonMap selected={selected} onSelect={name => setSelected(p => p === name ? null : name)} />
           </div>
-          <div style={{ display:'flex', gap:16, paddingTop:16, borderTop:'1px solid var(--bg-subtle)' }}>
+          {/* 3등급 안내 */}
+          <div style={{ display:'flex', gap:16 }}>
             {Object.entries(GRADE).map(([k,m]) => (
-              <div key={k} style={{ display:'flex', alignItems:'center', gap:7 }}>
-                <span style={{ width:13, height:13, borderRadius:4, background:m.bg, border:`1.5px solid ${m.border}` }} />
-                <span style={{ fontSize:13, color:'var(--text-sub)', fontWeight:600 }}>{m.label}{k==='red'?' (터널 多)':''}</span>
+              <div key={k} style={{ display:'flex', alignItems:'center', gap:8 }}>
+                <span style={{ width:13, height:13, borderRadius:4, background:m.bg, border:`1.5px solid ${m.border}`, flexShrink:0 }} />
+                <span style={{ fontSize:13, color:'var(--text-sub)', fontWeight:600 }}>{m.label}{k==='red'?' · 터널 노출 多':''}</span>
               </div>
             ))}
           </div>

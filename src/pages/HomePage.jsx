@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { REGIONS, GRADE } from '../data/mock.js'
+import GangwonMap from '../components/GangwonMap.jsx'
 
 const FEATURES = [
   { icon: '🗺️', bg: '#E3F0F2', title: '안심 코스 큐레이션', desc: '18개 시군 3등급 · 30개 터널 회피 코스', to: '/courses' },
@@ -48,39 +48,11 @@ export default function HomePage() {
         </div>
 
         {/* 시군 맵 */}
-        <div style={{ background:'linear-gradient(160deg,#15535F,#0E3A44)', borderRadius:26, padding:28, boxShadow:'var(--shadow-lg)' }}>
-          <p style={{ fontSize:13, fontWeight:600, color:'rgba(234,246,244,.7)', marginBottom:18 }}>강원 18개 시군 안심 등급</p>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:7, marginBottom:18 }}>
-            {REGIONS.map(r => {
-              const m = GRADE[r.grade]
-              return (
-                <button
-                  key={r.name}
-                  onClick={() => nav(`/courses?region=${r.name}`)}
-                  style={{
-                    gridColumn: r.col, gridRow: r.row,
-                    aspectRatio: '1', borderRadius:11,
-                    background: m.bg, border: `1.5px solid ${m.border}`, color: m.color,
-                    display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2,
-                    cursor:'pointer', transition:'transform .12s',
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.transform='scale(1.08)'}
-                  onMouseLeave={e => e.currentTarget.style.transform='scale(1)'}
-                >
-                  <span style={{ fontSize:12, fontWeight:800 }}>{r.name}</span>
-                  <span style={{ fontSize:10, opacity:.75 }}>터널 {r.tunnels}</span>
-                </button>
-              )
-            })}
-          </div>
-          <div style={{ display:'flex', gap:16 }}>
-            {Object.entries(GRADE).map(([k, m]) => (
-              <div key={k} style={{ display:'flex', alignItems:'center', gap:6 }}>
-                <span style={{ width:12, height:12, borderRadius:3, background:m.bg, border:`1.5px solid ${m.border}`, flexShrink:0 }} />
-                <span style={{ fontSize:12, color:'rgba(234,246,244,.65)', fontWeight:600 }}>{m.label}</span>
-              </div>
-            ))}
-          </div>
+        <div>
+          <span style={{ display:'inline-block', background:'#fff', border:'1px solid var(--border-light)', boxShadow:'var(--shadow-sm)', borderRadius:99, padding:'8px 18px', fontSize:16, fontWeight:700, color:'var(--text-head)', marginBottom:20 }}>
+            강원 18개 시군 안심 등급
+          </span>
+          <GangwonMap onSelect={name => nav(`/courses?region=${name}`)} />
         </div>
       </section>
 
