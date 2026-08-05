@@ -1,4 +1,5 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate, Navigate } from 'react-router-dom'
+import { getSession } from './lib/auth.js'
 
 const NAV = [
   { to: '/home',    label: '홈' },
@@ -10,10 +11,11 @@ const NAV = [
 
 export default function Layout() {
   const nav = useNavigate()
+  if (!getSession()) return <Navigate to="/login" replace />
   return (
-    <div>
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
       <header style={{
-        position: 'sticky', top: 0, zIndex: 30,
+        flex: '0 0 auto', zIndex: 30,
         background: 'rgba(255,255,255,.92)', backdropFilter: 'blur(8px)',
         borderBottom: '1px solid #D9E0E6',
       }}>
@@ -74,7 +76,7 @@ export default function Layout() {
         </div>
       </header>
 
-      <main>
+      <main style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto' }}>
         <Outlet />
       </main>
     </div>

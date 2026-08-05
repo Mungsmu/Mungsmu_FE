@@ -1,5 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { COURSES, GRADE } from '../data/mock.js'
+import MockStreetMap from '../components/MockStreetMap.jsx'
 
 const TYPE_BG = { '자연':'#E8F6EE','해변':'#E3F0F2','카페':'#FBF0D9','문화':'#EDE8F6','체험':'#F6EEE8','어촌':'#EBF0E8' }
 
@@ -10,11 +11,41 @@ export default function CourseDetailPage() {
   if (!course) return <p style={{ padding:60, textAlign:'center', color:'var(--text-muted)' }}>코스를 찾을 수 없어요.</p>
   const m = GRADE[course.grade]
 
+  const guideCourse = () => {
+    const [first, ...rest] = course.spots
+    const last = rest.pop()
+    nav('/route', {
+      state: {
+        courseMode: true,
+        courseTitle: course.title,
+        origin: first.name,
+        dest: last.name,
+        waypoints: rest.map(s => s.name),
+        distance: course.distance,
+        tunnelTag: course.tags.find(t => t.startsWith('터널')),
+      },
+    })
+  }
+
   return (
     <div style={{ maxWidth:1000, margin:'0 auto', padding:'24px 26px 80px' }}>
       <button onClick={() => nav('/courses')} style={{ color:'var(--text-muted)', fontSize:13.5, fontWeight:600, marginBottom:20, cursor:'pointer' }}>← 코스 목록</button>
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 380px', gap:32, alignItems:'start' }}>
+      <div style={{ display:'grid', gridTemplateColumns:'380px 1fr', gap:32, alignItems:'start' }}>
+        {/* 지도 */}
+        <div style={{ position:'sticky', top:80 }}>
+          <div style={{ borderRadius:24, height:420, overflow:'hidden', border:'1px solid var(--border-light)' }}>
+            <MockStreetMap
+              showPath
+              markers={course.spots.map((s, i) => ({ id:s.name, label:String(i + 1), query:s.name, color:'#14807A' }))}
+            >
+              <div style={{ position:'absolute', right:14, top:14, background:'rgba(255,255,255,.92)', borderRadius:8, padding:'6px 12px', fontSize:12.5, fontWeight:700, color:'var(--text-sub)' }}>
+                {course.spots.length}개 경유지
+              </div>
+            </MockStreetMap>
+          </div>
+        </div>
+
         <div>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:16, marginBottom:14 }}>
             <div>
@@ -48,16 +79,7 @@ export default function CourseDetailPage() {
             ))}
           </div>
 
-          <button onClick={() => nav('/route', { state: { dest: course.region } })} style={{ width:'100%', background:'var(--primary)', color:'#fff', fontWeight:700, fontSize:16, padding:15, borderRadius:'var(--r-lg)', boxShadow:'var(--shadow-lg)', cursor:'pointer' }}>이 코스로 안심 길찾기</button>
-        </div>
-
-        {/* 지도 placeholder */}
-        <div style={{ position:'sticky', top:80 }}>
-          <div style={{ background:'var(--bg-surface)', border:'1px solid var(--border-light)', borderRadius:24, height:420, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10 }}>
-            <span style={{ fontSize:40 }}>🗺️</span>
-            <p style={{ fontSize:15, fontWeight:700, color:'var(--text-sub)' }}>지도 (카카오맵 연동 예정)</p>
-            <p style={{ fontSize:13, color:'var(--text-muted)' }}>{course.spots.length}개 경유지</p>
-          </div>
+          <button onClick={guideCourse} style={{ width:'100%', background:'var(--primary)', color:'#fff', fontWeight:700, fontSize:16, padding:15, borderRadius:'var(--r-lg)', boxShadow:'var(--shadow-lg)', cursor:'pointer' }}>코스 안내</button>
         </div>
       </div>
     </div>

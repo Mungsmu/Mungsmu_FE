@@ -1,6 +1,6 @@
 /* 마음숨길 디자인 토큰 */
 *, *::before, *::after { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
-html, body { margin: 0; padding: 0; background: #F6F3EC; font-family: 'Pretendard', -apple-system, sans-serif; color: #16323A; }
+html, body { margin: 0; padding: 0; background: #F1F4F6; font-family: 'Pretendard', -apple-system, sans-serif; color: #16323A; }
 #root { min-height: 100vh; }
 h1, h2, h3 { margin: 0; color: #102E36; letter-spacing: -0.03em; }
 p { margin: 0; }

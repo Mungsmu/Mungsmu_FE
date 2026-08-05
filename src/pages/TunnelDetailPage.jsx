@@ -1,5 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { TUNNELS, DIFF } from '../data/mock.js'
+import MockStreetMap from '../components/MockStreetMap.jsx'
 
 const DIFF_META = {
   1: { label:'매우 낮음', desc:'길이가 짧고 환기가 잘 돼요. 대부분 부담 없이 통과할 수 있어요.',     bg:'#E8F6EE' },
@@ -47,6 +48,10 @@ export default function TunnelDetailPage() {
             <span style={{ fontSize:22, fontWeight:800, color:'#243C42', letterSpacing:'-.3px' }}>{v}</span>
           </div>
         ))}
+      </div>
+
+      <div style={{ borderRadius:'var(--r-xl)', height:280, overflow:'hidden', border:'1px solid var(--border-light)' }}>
+        <MockStreetMap markers={[{ id:t.id, label:t.name, query:t.name, color:dc }]} />
       </div>
     </div>
   )

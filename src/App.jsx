@@ -9,6 +9,8 @@ import RoutePage       from './pages/RoutePage.jsx'
 import NavigatingPage  from './pages/NavigatingPage.jsx'
 import CompanionPage   from './pages/CompanionPage.jsx'
 import { MyPage, LoginPage } from './pages/MyLoginPage.jsx'
+import SignUpPage      from './pages/SignUpPage.jsx'
+import { getSession }  from './lib/auth.js'
 import './index.css'
 
 export default function App() {
@@ -16,11 +18,12 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignUpPage />} />
         <Route path="/companion" element={<CompanionPage />} />
         <Route path="/navigating" element={<NavigatingPage />} />
 
         <Route element={<Layout />}>
-          <Route index element={<Navigate to="/home" replace />} />
+          <Route index element={<Navigate to={getSession() ? '/home' : '/login'} replace />} />
           <Route path="/home"        element={<HomePage />} />
           <Route path="/courses"     element={<CoursesPage />} />
           <Route path="/courses/:id" element={<CourseDetailPage />} />
@@ -30,7 +33,7 @@ export default function App() {
           <Route path="/my"          element={<MyPage />} />
         </Route>
 
-        <Route path="*" element={<Navigate to="/home" replace />} />
+        <Route path="*" element={<Navigate to={getSession() ? '/home' : '/login'} replace />} />
       </Routes>
     </BrowserRouter>
   )

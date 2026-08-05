@@ -15,9 +15,10 @@ export default function CoursesPage() {
     .filter(c => cat === '전체' || c.tags.includes(cat))
 
   return (
+    //<div style={{ background:'#fff', minHeight:'100%' }}>
     <div style={{ maxWidth:'var(--max-w)', margin:'0 auto', padding:'30px 26px 80px' }}>
-      <h1 style={{ fontSize:30, fontWeight:800, letterSpacing:'-.8px', marginBottom:6 }}>안심 코스 큐레이션</h1>
-      <p style={{ fontSize:16, color:'var(--text-sub)', marginBottom:22 }}>강원 18개 시군의 터널 노출도를 3등급으로 분류했어요. 지역을 골라 코스를 살펴보세요.</p>
+      <h1 style={{ fontSize:30, fontWeight:800, letterSpacing:'-.8px', marginBottom:6 }}>강원 안심 코스</h1>
+      <p style={{ fontSize:16, color:'var(--text-sub)', marginBottom:22 }}>3등급 분류 강원도 관광 코스 큐레이션</p>
 
       <div style={{ display:'grid', gridTemplateColumns:'520px 1fr', gap:30, alignItems:'start' }}>
         {/* 지역 맵 */}
@@ -97,5 +98,6 @@ export default function CoursesPage() {
         </div>
       </div>
     </div>
+    //</div>
   )
 }

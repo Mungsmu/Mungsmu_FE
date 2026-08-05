@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# 카카오맵 API 키 등 비밀값
+.env
+.env.local
+.env.*.local

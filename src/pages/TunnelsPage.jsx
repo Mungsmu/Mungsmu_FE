@@ -33,7 +33,7 @@ export default function TunnelsPage() {
     <div style={{ maxWidth:1000, margin:'0 auto', padding:'30px 26px 80px' }}>
       <h1 style={{ fontSize:30, fontWeight:800, letterSpacing:'-.8px', marginBottom:6 }}>터널 정보 백과</h1>
       <p style={{ fontSize:16, color:'var(--text-sub)', marginBottom:22 }}>
-        길이·차로·환기·정체를 종합한 <strong style={{ color:'var(--text-head)' }}>공황 난이도 1~5단계</strong>로 미리 확인하세요.
+        길이·차로·환기·정체 종합 <strong style={{ color:'var(--text-head)' }}> 터널별 공황 난이도 1~5단계</strong>
       </p>
       <div style={{ position:'relative', marginBottom:22 }}>
         <span style={{ position:'absolute', left:17, top:'50%', transform:'translateY(-50%)', color:'#9FAEAF', fontSize:17, pointerEvents:'none' }}>⌕</span>

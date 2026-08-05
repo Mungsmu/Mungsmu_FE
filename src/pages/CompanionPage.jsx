@@ -1,146 +1,246 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { TUNNELS } from '../data/mock.js'
+import MockStreetMap from '../components/MockStreetMap.jsx'
+import TunnelBanner from '../components/TunnelBanner.jsx'
+import TunnelGauge from '../components/TunnelGauge.jsx'
+import { loadKakaoMaps, haversineM } from '../lib/kakaoMap.js'
+import { speak } from '../lib/speech.js'
+import { recordTunnelPass } from '../lib/tunnelStats.js'
 
-const PHASES = {
-  inhale: { label:'들이쉬기',  sec:4, next:'hold' },
-  hold:   { label:'잠깐 멈춤', sec:2, next:'exhale' },
-  exhale: { label:'내쉬기',    sec:6, next:'rest' },
-  rest:   { label:'잠깐 쉬기', sec:1, next:'inhale' },
-}
+const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const DEFAULT_TUNNEL = TUNNELS.find(t => t.name === '미시령터널')
+const BREATH_MS = 5000
+const EXIT_WARN_M = 10
+const APPROACH_MS = 5000 // 10m 전 팝업을 보여주는 시간 — 이 동안은 아직 호흡 가이드가 시작되지 않는다
 
 export default function CompanionPage() {
   const nav = useNavigate()
-  const tunnel = useLocation().state?.tunnel ?? DEFAULT_TUNNEL
-  const TUNNEL_LEN = tunnel.lengthM
-  const [companionStep, setCompanionStep] = useState('breathing')
-  const [phase, setPhase] = useState('inhale')
-  const [count, setCount] = useState(4)
+  const state = useLocation().state ?? {}
+  const tunnel = state.tunnel ?? DEFAULT_TUNNEL
+  const tunnels = state.tunnels ?? [tunnel]
+  const remainingTunnels = tunnels.slice(1)
+  const { origin, dest, durationMin, distanceKm, waypoints = [], passedTunnels = [] } = state
+  const isTutorial = !dest // 헤더의 "동반 모드" 버튼으로 들어온 경우 — 실제 여정이 없으니 호흡 연습용
+
+  // phase: 'approach'(10m 전 팝업, 아직 호흡 없음) → 'breathing'(터널 안, 호흡 가이드 진행)
+  const [phase, setPhase] = useState('approach')
   const [pct, setPct] = useState(0)
-  const [viz, setViz] = useState('ripple')
-  const phaseRef = useRef('inhale')
-  const countRef = useRef(4)
+  const [breathPhase, setBreathPhase] = useState('exhale') // 'exhale'(내쉬기,빨강) | 'inhale'(들이마시기,초록)
+  const [breathFrac, setBreathFrac] = useState(0) // 현재 호흡 구간 내 진행률 0~1 (테두리를 5초에 걸쳐 매끄럽게 채움)
+  const [guardianState, setGuardianState] = useState('idle') // 'idle' | 'calling' | 'sent'
+  const [exitWarned, setExitWarned] = useState(false)
 
+  const enterTimeRef = useRef(null)
+  const phaseStartRef = useRef(Date.now())
+  const exitWarnedRef = useRef(false)
+  const completedRef = useRef(false)
+
+  // 1) 접근 단계: 10m 전 팝업 + 음성. 아직 호흡 가이드는 시작하지 않는다.
+  // (개발 모드 StrictMode는 effect를 두 번 실행하는데, cleanup에서 speech를 취소해 두지 않으면
+  //  첫 호출과 두 번째 호출의 음성이 겹쳐서 씹히는 것처럼 들린다.)
   useEffect(() => {
-    if (companionStep !== 'breathing') return
-    const t = setInterval(() => {
-      countRef.current -= 1
-      if (countRef.current <= 0) {
-        const next = PHASES[phaseRef.current].next
-        phaseRef.current = next
-        countRef.current = PHASES[next].sec
-        setPhase(next)
-        setCount(PHASES[next].sec)
-      } else { setCount(countRef.current) }
-    }, 1000)
-    return () => clearInterval(t)
-  }, [companionStep])
+    speak('터널 진입 10미터 전입니다. 곧 동반모드가 실행됩니다.')
+    const t = setTimeout(() => {
+      enterTimeRef.current = Date.now()
+      setPhase('breathing')
+    }, APPROACH_MS)
+    return () => {
+      clearTimeout(t)
+      window.speechSynthesis?.cancel()
+    }
+  }, [])
 
+  // 2) 호흡 가이드: 5초 내쉬기 → 5초 들이마시기를 터널을 통과할 때까지 계속 반복한다.
+  // 음성이 실제로 끝난 시점부터 5초를 세기 시작해서, 문장이 채 끝나기도 전에 테두리가 먼저 차오르는
+  // 어긋남 없이 "안내 음성 → 그 다음 5초간 호흡" 순서가 항상 지켜지도록 한다.
   useEffect(() => {
-    if (companionStep !== 'breathing') return
-    const t = setInterval(() => setPct(p => Math.min(p + 100/30, 100)), 1000)
-    return () => clearInterval(t)
-  }, [companionStep])
+    if (phase !== 'breathing') return
+    let cancelled = false
+    let tickTimer = null
 
-  useEffect(() => {
-    if (pct >= 99.5) setCompanionStep('complete')
-  }, [pct])
+    const runPhase = ph => {
+      if (cancelled) return
+      setBreathPhase(ph)
+      setBreathFrac(0)
+      speak(ph === 'exhale' ? '5초간 숨을 내쉬세요.' : '5초간 숨을 들이마시세요.', {
+        onend: () => {
+          if (cancelled) return
+          phaseStartRef.current = Date.now()
+          tickTimer = setInterval(() => {
+            const elapsed = Date.now() - phaseStartRef.current
+            if (elapsed >= BREATH_MS) {
+              clearInterval(tickTimer)
+              runPhase(ph === 'exhale' ? 'inhale' : 'exhale')
+            } else {
+              setBreathFrac(elapsed / BREATH_MS)
+            }
+          }, 100)
+        },
+      })
+    }
+    runPhase('exhale')
 
-  const remain = Math.round(TUNNEL_LEN * (1 - pct / 100))
-  const orbScale = (phase === 'inhale' || phase === 'hold') ? 1.18 : 0.85
+    return () => { cancelled = true; if (tickTimer) clearInterval(tickTimer) }
+  }, [phase])
 
-  if (companionStep === 'complete') {
-    return (
-      <div style={{ position:'fixed', inset:0, zIndex:60, background:'#fff', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'0 28px', fontFamily:'Pretendard, sans-serif' }}>
-        <div style={{ width:78, height:78, borderRadius:'50%', background:'#EAF7EF', display:'flex', alignItems:'center', justifyContent:'center', fontSize:34 }}>✓</div>
-        <p style={{ fontSize:19, fontWeight:800, marginTop:18, color:'#16242E' }}>통과 완료했어요</p>
-        <p style={{ fontSize:12.5, color:'#6B7A85', marginTop:8, lineHeight:1.6, textAlign:'center' }}>{tunnel.name}을 무사히 지났습니다.<br />오늘도 한 걸음 나아갔어요.</p>
-        <div style={{ display:'flex', gap:12, marginTop:24, width:'100%', maxWidth:320 }}>
-          <div style={{ flex:1, background:'#F6F8FA', borderRadius:11, padding:12, textAlign:'center' }}>
-            <div style={{ fontWeight:800, fontSize:17, color:'#0E5E58' }}>3:14</div>
-            <div style={{ fontSize:11, color:'#8A98A2', marginTop:3 }}>통과 시간</div>
-          </div>
-          <div style={{ flex:1, background:'#F6F8FA', borderRadius:11, padding:12, textAlign:'center' }}>
-            <div style={{ fontWeight:800, fontSize:17, color:'#0E5E58' }}>7회</div>
-            <div style={{ fontSize:11, color:'#8A98A2', marginTop:3 }}>누적 통과</div>
-          </div>
-        </div>
-        <div style={{ background:'#ECF6F4', border:'1px solid #CBE6E0', borderRadius:11, padding:'11px 13px', display:'flex', alignItems:'center', gap:9, marginTop:16, width:'100%', maxWidth:320 }}>
-          <span style={{ fontSize:15 }}>📨</span>
-          <span style={{ fontSize:11, color:'#0E5E58' }}>보호자(가족)에게 통과 완료 알림을 보냈어요</span>
-        </div>
-        <button onClick={() => nav('/home')} style={{ background:'#14807A', height:44, borderRadius:12, color:'#fff', fontWeight:800, fontSize:14, width:'100%', maxWidth:320, marginTop:24, cursor:'pointer' }}>여정 계속하기</button>
-      </div>
-    )
+  const finish = () => {
+    if (completedRef.current) return
+    completedRef.current = true
+    const sec = (Date.now() - (enterTimeRef.current ?? Date.now())) / 1000
+    recordTunnelPass()
+    speak('터널을 통과하셨습니다.')
+    setPct(100)
+    if (isTutorial) {
+      // 튜토리얼은 실제 여정이 없으니 자동으로 화면을 넘기지 않고, 사용자가 직접 "나가기"를 눌러야 끝난다.
+      setPhase('done')
+      return
+    }
+    setTimeout(() => {
+      const newPassed = [...passedTunnels, { name: tunnel.name, diff: tunnel.diff, sec }]
+      nav('/navigating', {
+        state: { origin, dest, durationMin, distanceKm, waypoints, tunnels: remainingTunnels, passedTunnels: newPassed },
+      })
+    }, 1600)
   }
 
+  // 3) 터널 통과 진행률: 실제 이동거리(GPS)를 터널 길이와 비교해서 계산.
+  // 실측이 안 되면(카카오 키 없음·위치 권한 거부 등) 타이머 데모로 대체한다. 호흡 단계에서만 진행된다.
+  useEffect(() => {
+    if (phase !== 'breathing') return
+    const lengthM = tunnel?.lengthM || 2000
+    const warnAtM = Math.max(0, lengthM - EXIT_WARN_M)
+
+    const applyProgress = traveledM => {
+      setPct(Math.min(100, Math.max(0, (traveledM / lengthM) * 100)))
+      if (traveledM >= warnAtM && !exitWarnedRef.current) {
+        exitWarnedRef.current = true
+        setExitWarned(true)
+        speak('터널 통과 10미터 전.')
+      }
+      if (traveledM >= lengthM) finish()
+    }
+
+    let cancelled = false
+    let watchId = null
+    let mockTimer = null
+    let usingGps = false
+    let last = null
+    let traveled = 0
+
+    const startMock = () => {
+      if (usingGps || mockTimer) return
+      mockTimer = setInterval(() => {
+        traveled += lengthM / 24
+        applyProgress(traveled)
+      }, 1000)
+    }
+    const stopMock = () => { if (mockTimer) { clearInterval(mockTimer); mockTimer = null } }
+
+    ;(async () => {
+      if (!KAKAO_KEY || !navigator.geolocation) { startMock(); return }
+      try {
+        await loadKakaoMaps(KAKAO_KEY)
+        if (cancelled) return
+        watchId = navigator.geolocation.watchPosition(
+          pos => {
+            const cur = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+            if (last) {
+              const delta = haversineM(last, cur)
+              if (delta > 0.5 && delta < 200) {
+                traveled += delta
+                usingGps = true
+                stopMock()
+                applyProgress(traveled)
+              }
+            }
+            last = cur
+          },
+          () => startMock(),
+          { enableHighAccuracy: true, maximumAge: 2000 },
+        )
+        setTimeout(() => { if (!usingGps) startMock() }, 4000)
+      } catch {
+        if (!cancelled) startMock()
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      stopMock()
+      if (watchId != null) navigator.geolocation.clearWatch(watchId)
+    }
+  }, [phase, tunnel])
+
+  const callGuardian = () => {
+    if (guardianState === 'calling') return
+    setGuardianState('calling')
+    speak('보호자를 호출합니다.')
+    setTimeout(() => {
+      setGuardianState('sent')
+      speak('보호자 호출 완료.')
+      setTimeout(() => setGuardianState('idle'), 4000)
+    }, 1200)
+  }
+
+  const breathing = phase === 'breathing'
+  const borderColor = breathPhase === 'exhale' ? '212,91,78' : '46,158,107' // 내쉬기=빨강, 들이마시기=초록
+  const thickness = Math.round(breathFrac * 30)
+
   return (
-    <div style={{ position:'fixed', inset:0, zIndex:60, background:'#0E5E58', color:'#EAF6F4', display:'flex', flexDirection:'column', fontFamily:'Pretendard, sans-serif', overflow:'hidden' }}>
-      {/* 상단 바 */}
-      <div style={{ display:'flex', alignItems:'center', gap:14, padding:'20px 28px', flexShrink:0 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:9 }}>
-          <span style={{ width:9, height:9, borderRadius:'50%', background:'#8DE0C2', animation:'pulse 2s ease-in-out infinite' }} />
-          <span style={{ fontSize:13, color:'#BFE6E0', fontWeight:600 }}>보호자 김민준 님께 실시간 위치 공유 중</span>
-        </div>
-        <button onClick={() => nav(-1)} style={{ marginLeft:'auto', border:'1px solid rgba(255,255,255,.22)', background:'rgba(255,255,255,.08)', color:'#EAF6F4', fontWeight:700, fontSize:14, padding:'9px 16px', borderRadius:11, cursor:'pointer' }}>나가기 ✕</button>
-      </div>
+    <div style={{ position:'fixed', inset:0, zIndex:60, fontFamily:'Pretendard, sans-serif' }}>
+      {/* 호흡 가이드: 호흡 단계에서만 화면 테두리가 내쉴 때 빨강, 들이마실 때 초록으로 5초에 걸쳐 차오른다.
+          중앙에는 별도 카드를 두지 않는다 — 실제 주행 화면(지도)을 가리지 않기 위함. */}
+      {breathing && (
+        <div style={{
+          position:'absolute', inset:0, zIndex:2, pointerEvents:'none',
+          boxShadow:`inset 0 0 0 ${thickness}px rgba(${borderColor},.55)`,
+        }} />
+      )}
 
-      {/* 터널 진행도 */}
-      <div style={{ padding:'0 28px', maxWidth:560, width:'100%', margin:'0 auto', flexShrink:0 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:8 }}>
-          <span style={{ fontSize:11, color:'#8FD8CF' }}>{tunnel.name} 통과 중</span>
-          <span style={{ fontSize:14, color:'#9FCFCB' }}>남은 거리 <strong style={{ color:'#8DE0C2' }}>{pct >= 99.5 ? '통과 완료! 🎉' : `${remain.toLocaleString()}m`}</strong></span>
+      <MockStreetMap markers={[{ id:tunnel.id, label:tunnel.name, query:tunnel.name, color:'#D45B4E' }]}>
+        {/* 상단 상태 · 나가기 */}
+        <div style={{ position:'absolute', top:16, left:16, right:16, display:'flex', alignItems:'center', gap:10, zIndex:1, pointerEvents:'auto' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, background:'rgba(255,255,255,.9)', borderRadius:99, padding:'7px 14px' }}>
+            <span style={{ width:8, height:8, borderRadius:'50%', background:'#14807A', animation:'pulse 2s ease-in-out infinite' }} />
+            <span style={{ fontSize:12, color:'#0E5E58', fontWeight:700 }}>
+              {phase === 'done' ? '터널 통과 완료' : breathing ? '동반 모드 진행 중' : '터널 접근 중'}
+            </span>
+          </div>
+          <button onClick={() => nav(-1)} style={{ marginLeft:'auto', background:'#fff', color:'#5B6C78', fontWeight:700, fontSize:13, padding:'7px 14px', borderRadius:99, cursor:'pointer' }}>나가기 ✕</button>
         </div>
-        <div style={{ height:8, borderRadius:99, background:'rgba(255,255,255,.13)', overflow:'hidden' }}>
-          <div style={{ height:'100%', width:`${pct}%`, background:'linear-gradient(90deg,#4FAEB8,#8DE0C2)', borderRadius:99, transition:'width .3s linear' }} />
-        </div>
-        <div style={{ display:'flex', justifyContent:'space-between', marginTop:6, fontSize:12, color:'#7FB0AC' }}>
-          <span>진입</span><span>왕복 {tunnel.lanes}차로 · {tunnel.lengthM.toLocaleString()}m</span><span>출구</span>
-        </div>
-      </div>
 
-      {/* 호흡 비주얼라이저 */}
-      <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:6, minHeight:0, padding:'0 20px' }}>
-        {viz === 'ripple' && (
-          <div style={{ position:'relative', width:280, height:280, display:'flex', alignItems:'center', justifyContent:'center' }}>
-            {[0, 1.7, 3.4].map(d => (
-              <span key={d} style={{ position:'absolute', width:160, height:160, border:'2px solid rgba(141,224,194,.45)', borderRadius:'50%', animation:`ripple 5s ease-out ${d}s infinite` }} />
-            ))}
-            <div style={{ width:160, height:160, borderRadius:'50%', background:'radial-gradient(circle at 38% 32%,#7FE0CC,#2D9D9B)', boxShadow:'0 0 60px rgba(111,215,196,.4)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', transform:`scale(${orbScale})`, transition:'transform .8s ease' }}>
-              <span style={{ fontSize:52, fontWeight:800, color:'#06343B', lineHeight:1 }}>{count}</span>
-              <span style={{ fontSize:10.5, color:'#8FD8CF', marginTop:8 }}>남은 거리 {remain.toLocaleString()}m</span>
+        {phase === 'approach' ? (
+          <TunnelBanner title="터널 진입 10m 전" subtitle="곧 동반모드가 시작됩니다" />
+        ) : phase === 'done' ? (
+          <TunnelBanner title="터널을 통과하셨습니다" subtitle="나가기를 눌러 마칠 수 있어요" />
+        ) : exitWarned ? (
+          <TunnelBanner title="터널 통과 10m 전" subtitle="곧 도착해요, 조금만 더 힘내요" />
+        ) : (
+          <TunnelBanner
+            title={guardianState === 'calling' ? '보호자 호출 중...' : '보호자 호출'}
+            subtitle={guardianState === 'sent' ? '- 메시지 전송 완료 -' : null}
+            onClick={callGuardian}
+            disabled={guardianState === 'calling'}
+          />
+        )}
+        {breathing && <TunnelGauge pct={pct} />}
+
+        {/* 하단 진행 정보 — 호흡 단계에서만 표시 */}
+        {breathing && (
+          <div style={{ position:'absolute', left:16, right:16, bottom:16, pointerEvents:'auto' }}>
+            <div style={{ background:'#fff', borderRadius:14, padding:'13px 16px', boxShadow:'0 6px 20px rgba(20,40,60,.12)' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+                <span style={{ fontSize:12.5, fontWeight:700, color:'#16242E' }}>{tunnel.name} 통과 중</span>
+                <span style={{ fontSize:12.5, color:'#5B6C78' }}>{pct >= 100 ? '통과 완료' : `${Math.round(pct)}% 통과`}</span>
+              </div>
+              <div style={{ height:6, borderRadius:99, background:'#E4EAEF', overflow:'hidden', marginTop:8 }}>
+                <div style={{ height:'100%', width:`${pct}%`, background:'linear-gradient(90deg,#1E9E94,#0E5E58)', borderRadius:99, transition:'width .3s linear' }} />
+              </div>
             </div>
           </div>
         )}
-        {viz === 'wave' && (
-          <div style={{ position:'relative', width:440, height:240, display:'flex', alignItems:'center', justifyContent:'center', maxWidth:'100%' }}>
-            <svg viewBox="0 0 600 240" style={{ width:'100%', height:'100%' }}>
-              <path d={`M0 120 Q75 ${orbScale > 1 ? 78 : 152} 150 120 T300 120 T450 120 T600 120`} fill="none" stroke="#8DE0C2" strokeWidth="5" strokeLinecap="round" style={{ transition:'d .8s ease' }} />
-              <path d={`M0 120 Q75 ${orbScale > 1 ? 152 : 78} 150 120 T300 120 T450 120 T600 120`} fill="none" stroke="rgba(79,174,184,.5)" strokeWidth="3" strokeLinecap="round" />
-            </svg>
-            <span style={{ position:'absolute', fontSize:52, fontWeight:800, color:'#EAF6F4' }}>{count}</span>
-          </div>
-        )}
-        {viz === 'tide' && (
-          <div style={{ position:'relative', width:200, height:200, borderRadius:'50%', border:'3px solid rgba(141,224,194,.4)', overflow:'hidden', background:'rgba(255,255,255,.04)' }}>
-            <div style={{ position:'absolute', left:0, right:0, bottom:0, height:`${orbScale > 1 ? 70 : 30}%`, background:'linear-gradient(180deg,#4FAEB8,#2D8C97)', transition:'height 1s linear' }} />
-            <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:52, fontWeight:800, color:'#EAF6F4', zIndex:1 }}>{count}</div>
-          </div>
-        )}
-        <p style={{ fontSize:22, fontWeight:800, marginTop:12 }}>{PHASES[phase].label}</p>
-        <p style={{ fontSize:13, color:'rgba(234,246,244,.5)', fontWeight:500 }}>들이쉬기 4초 · 멈춤 2초 · 내쉬기 6초</p>
-      </div>
-
-      {/* 컨트롤 */}
-      <div style={{ flexShrink:0, padding:'16px 28px 32px', display:'flex', flexDirection:'column', gap:14 }}>
-        <div style={{ display:'flex', gap:8, justifyContent:'center' }}>
-          {[['ripple','물결 파동'],['wave','음파'],['tide','차오름']].map(([k,l]) => (
-            <button key={k} onClick={() => setViz(k)} style={{ border:`1px solid ${viz===k?'rgba(141,224,194,.4)':'rgba(255,255,255,.15)'}`, background: viz===k?'rgba(141,224,194,.18)':'rgba(255,255,255,.06)', color: viz===k?'#8DE0C2':'rgba(234,246,244,.6)', fontSize:13, fontWeight:600, padding:'8px 16px', borderRadius:99, cursor:'pointer' }}>{l}</button>
-          ))}
-        </div>
-        <button style={{ height:42, border:'1px solid rgba(255,255,255,.25)', borderRadius:12, color:'rgba(255,255,255,.9)', background:'transparent', fontWeight:700, fontSize:14, cursor:'pointer' }}>일시 정지</button>
-      </div>
+      </MockStreetMap>
     </div>
   )
 }

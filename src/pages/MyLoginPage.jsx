@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { findUser, setSession, clearSession } from '../lib/auth.js'
 
 export function MyPage() {
   const nav = useNavigate()
@@ -71,7 +72,7 @@ export function MyPage() {
             {['이용 내역','앱 설정','문의하기'].map(l => (
               <button key={l} style={{ display:'block', width:'100%', textAlign:'left', borderTop:'1px solid var(--border-light)', padding:'14px 0', fontSize:15, fontWeight:500, color:'var(--text-sub)', cursor:'pointer' }}>{l}</button>
             ))}
-            <button onClick={() => nav('/login')} style={{ display:'block', width:'100%', textAlign:'left', borderTop:'1px solid var(--border-light)', padding:'14px 0', fontSize:15, fontWeight:500, color:'#B24A33', cursor:'pointer' }}>로그아웃</button>
+            <button onClick={() => { clearSession(); nav('/login') }} style={{ display:'block', width:'100%', textAlign:'left', borderTop:'1px solid var(--border-light)', padding:'14px 0', fontSize:15, fontWeight:500, color:'#B24A33', cursor:'pointer' }}>로그아웃</button>
           </div>
         </div>
       </div>
@@ -81,7 +82,23 @@ export function MyPage() {
 
 export function LoginPage() {
   const nav = useNavigate()
-  const [name, setName] = useState('')
+  const [userId, setUserId] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+
+  // 아직 실제 백엔드가 없어서, 가입된 계정이면 비밀번호를 검증하고
+  // 가입 이력이 없으면(=임시로 아무거나 입력해본 경우) 그 입력값으로 임시 세션을 만들어 통과시킨다.
+  const submit = () => {
+    if (!userId.trim() || !password) return
+    const user = findUser(userId.trim())
+    if (user && user.password !== password) {
+      setError('비밀번호가 일치하지 않아요.')
+      return
+    }
+    setSession(user ?? { userId: userId.trim(), name: userId.trim() })
+    nav('/home')
+  }
+
   return (
     <div style={{ minHeight:'100vh', background:'var(--bg-page)', display:'flex', alignItems:'center', justifyContent:'center', padding:24 }}>
       <div style={{ background:'var(--bg-surface)', border:'1px solid var(--border-light)', borderRadius:24, padding:'48px 44px', width:'100%', maxWidth:440, textAlign:'center' }}>
@@ -96,15 +113,21 @@ export function LoginPage() {
         <h1 style={{ fontSize:22, fontWeight:800, letterSpacing:'-.5px', marginBottom:10 }}>안심하고 떠나는 강원 여행</h1>
         <p style={{ fontSize:13.5, color:'var(--text-sub)', lineHeight:1.6, marginBottom:36 }}>공황장애 환자를 위한 터널 회피 안심 관광 큐레이션 서비스</p>
         <div style={{ display:'flex', flexDirection:'column', gap:10, textAlign:'left', marginBottom:24 }}>
-          <label style={{ fontSize:13.5, fontWeight:700, color:'var(--text-head)' }}>이름</label>
-          <input value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key==='Enter' && name.trim() && nav('/home')} placeholder="이름을 입력하세요"
+          <label style={{ fontSize:13.5, fontWeight:700, color:'var(--text-head)' }}>아이디</label>
+          <input value={userId} onChange={e => { setUserId(e.target.value); setError('') }} placeholder="아이디를 입력하세요"
             style={{ border:'1.5px solid var(--border-light)', background:'var(--bg-page)', borderRadius:'var(--r-lg)', padding:'14px 16px', fontSize:16, color:'var(--text-body)' }} autoFocus />
-          <button onClick={() => name.trim() && nav('/home')} disabled={!name.trim()}
-            style={{ background:'var(--primary)', color:'#fff', fontWeight:700, fontSize:16, padding:14, borderRadius:'var(--r-lg)', cursor:'pointer', boxShadow:'var(--shadow-lg)', marginTop:4, opacity: name.trim()?1:0.4 }}>
-            시작하기
+          <label style={{ fontSize:13.5, fontWeight:700, color:'var(--text-head)', marginTop:4 }}>비밀번호</label>
+          <input type="password" value={password} onChange={e => { setPassword(e.target.value); setError('') }}
+            onKeyDown={e => e.key === 'Enter' && submit()} placeholder="비밀번호를 입력하세요"
+            style={{ border:'1.5px solid var(--border-light)', background:'var(--bg-page)', borderRadius:'var(--r-lg)', padding:'14px 16px', fontSize:16, color:'var(--text-body)' }} />
+          {error && <p style={{ fontSize:12.5, color:'#A53E33', marginTop:-2 }}>{error}</p>}
+          <button onClick={submit} disabled={!userId.trim() || !password}
+            style={{ background:'var(--primary)', color:'#fff', fontWeight:700, fontSize:16, padding:14, borderRadius:'var(--r-lg)', cursor:'pointer', boxShadow:'var(--shadow-lg)', marginTop:4, opacity: (!userId.trim() || !password) ? 0.4 : 1 }}>
+            로그인
           </button>
         </div>
-        <p style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.6 }}>화면 초안 확인용 임시 로그인입니다.<br />실제 서비스에서는 소셜 로그인이 제공돼요.</p>
+        <p style={{ fontSize:11.5, color:'var(--text-muted)', lineHeight:1.6, marginBottom:10 }}>아직 백엔드 연동 전이라, 가입 이력이 없어도 아이디·비밀번호를 입력하면 임시로 이용하실 수 있어요.</p>
+        <button onClick={() => nav('/signup')} style={{ fontSize:13, fontWeight:700, color:'var(--primary)', cursor:'pointer' }}>회원가입 하러 가기 →</button>
       </div>
     </div>
   )

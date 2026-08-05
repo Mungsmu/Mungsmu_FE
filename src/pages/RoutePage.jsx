@@ -1,62 +1,158 @@
 import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { TUNNELS } from '../data/mock.js'
+import { TUNNELS, REGIONS } from '../data/mock.js'
+import MockStreetMap from '../components/MockStreetMap.jsx'
+import PlaceAutocomplete from '../components/PlaceAutocomplete.jsx'
+import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
 
+const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const RECENT = ['속초 해수욕장', '양양 낙산사', '강릉 경포해변']
-const DEFAULT_TUNNEL = TUNNELS.find(t => t.name === '미시령터널')
 
+// 카카오 키가 없거나 지오코딩이 실패했을 때만 쓰는 목업 결과값 (기존 데모 그대로 유지)
 const MOCK_RESULT = {
   avoid: {
     durationMin: 192, distanceKm: 238, tunnelCount: 0,
     waypoints: ['영동고속 → 7번 국도 진입', '동해안 해안 라인 경유'],
   },
   shortest: {
-    durationMin: 170, distanceKm: 216, tunnelCount: 4,
-    tunnelNames: ['대관령1터널', '둔내터널'],
+    durationMin: 170, distanceKm: 216, tunnelCount: 2,
+    tunnels: [TUNNELS.find(t => t.name === '대관령1터널'), TUNNELS.find(t => t.name === '둔내터널')],
   },
+}
+
+// 출발지·목적지 실좌표로 거리(직선거리 보정)·소요시간을 추정하고,
+// 목적지가 속한 강원 시군을 매칭해 그 지역에 실제로 등록된 터널들을 "최단 루트"에 연결한다.
+async function computeRouteResult(originStr, destStr) {
+  if (!KAKAO_KEY) return null
+  try {
+    const kakao = await loadKakaoMaps(KAKAO_KEY)
+    const [originPlace, destPlace] = await Promise.all([resolvePlace(kakao, originStr), resolvePlace(kakao, destStr)])
+    if (!originPlace || !destPlace) return null
+
+    const straightKm = haversineM(originPlace, destPlace) / 1000
+    const region = REGIONS.find(r => destPlace.address.includes(r.name) || destPlace.name.includes(r.name) || destStr.includes(r.name))
+    const tunnels = region ? TUNNELS.filter(t => t.region === region.name) : []
+
+    const avoidKm = Math.max(1, Math.round(straightKm * 1.3))
+    const shortestKm = Math.max(1, Math.round(straightKm * 1.15))
+
+    return {
+      avoid: {
+        durationMin: Math.max(5, Math.round((avoidKm / 62) * 60)), distanceKm: avoidKm, tunnelCount: 0,
+        waypoints: [`${originStr} 출발`, `${destStr} 방면 국도·해안도로 경유`],
+      },
+      shortest: {
+        durationMin: Math.max(5, Math.round((shortestKm / 78) * 60)), distanceKm: shortestKm,
+        tunnelCount: tunnels.length, tunnels,
+      },
+    }
+  } catch {
+    return null
+  }
 }
 
 export default function RoutePage() {
   const navigate = useNavigate()
   const location = useLocation()
-  const tunnel = location.state?.tunnel ?? DEFAULT_TUNNEL
+  const courseMode = !!location.state?.courseMode
+  const courseTitle = location.state?.courseTitle
+  const waypoints = location.state?.waypoints ?? []
+  const courseDistance = location.state?.distance
+  const courseTunnelTag = location.state?.tunnelTag
 
-  const [origin, setOrigin] = useState('')
+  const [origin, setOrigin] = useState(location.state?.origin ?? '')
   const [dest, setDest] = useState(location.state?.dest ?? '')
-  const [step, setStep] = useState('input')
+  const [step, setStep] = useState(courseMode ? 'course' : 'input')
   const [selectedRoute, setSelectedRoute] = useState('avoid')
   const [loading, setLoading] = useState(false)
-  const route = MOCK_RESULT[selectedRoute]
+  const [result, setResult] = useState(MOCK_RESULT)
+  const route = result[selectedRoute]
+  const tunnels = route.tunnels ?? []
 
-  const search = () => {
+  const search = async () => {
     if (!origin.trim() || !dest.trim()) return
     setLoading(true)
-    setTimeout(() => { setLoading(false); setStep('compare') }, 700)
+    const real = await computeRouteResult(origin.trim(), dest.trim())
+    setResult(real ?? MOCK_RESULT)
+    setLoading(false)
+    setStep('compare')
+  }
+
+  if (step === 'course') {
+    const allSpots = [origin, ...waypoints, dest]
+    return (
+      <div style={{ maxWidth:640, margin:'0 auto', padding:'30px 26px 80px' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
+          <span onClick={() => navigate(-1)} style={{ fontSize:20, color:'#8A98A2', cursor:'pointer' }}>‹</span>
+          <span style={{ fontSize:14, fontWeight:700 }}>{courseTitle ?? `${origin} → ${dest}`}</span>
+        </div>
+
+        <div style={{ borderRadius:14, overflow:'hidden', height:300, border:'1px solid #E4EAEF', marginBottom:20 }}>
+          <MockStreetMap
+            showPath
+            markers={allSpots.map((name, i) => ({
+              id:`${i}`, label:String(i + 1), query:name,
+              color: i === 0 ? '#14807A' : i === allSpots.length - 1 ? '#D45B4E' : '#8A98A2',
+            }))}
+          />
+        </div>
+
+        <div style={{ display:'flex', gap:16, marginBottom:14 }}>
+          {courseDistance && (
+            <div>
+              <div style={{ fontWeight:800, fontSize:19 }}>{courseDistance}</div>
+              <div style={{ fontSize:10, color:'#8A98A2', marginTop:4 }}>총 거리</div>
+            </div>
+          )}
+          <div>
+            <div style={{ fontWeight:800, fontSize:19 }}>{allSpots.length}곳</div>
+            <div style={{ fontSize:10, color:'#8A98A2', marginTop:4 }}>경유지</div>
+          </div>
+          {courseTunnelTag && (
+            <div>
+              <div style={{ fontWeight:800, fontSize:19, color:'#2E7D4F' }}>{courseTunnelTag}</div>
+              <div style={{ fontSize:10, color:'#8A98A2', marginTop:4 }}>터널</div>
+            </div>
+          )}
+        </div>
+
+        <p style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'#8A98A2', letterSpacing:'0.05em', margin:'0 0 9px' }}>순서대로 경유</p>
+        {allSpots.map((name, i) => (
+          <div key={`${name}-${i}`} style={{ display:'flex', alignItems:'center', gap:9, fontSize:12.5, color:'#16242E', fontWeight:600, marginBottom:8 }}>
+            <span style={{ width:19, height:19, borderRadius:'50%', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800, color:'#fff',
+              background: i === 0 ? '#14807A' : i === allSpots.length - 1 ? '#D45B4E' : '#8A98A2' }}>{i + 1}</span>
+            {name}
+          </div>
+        ))}
+
+        <button
+          onClick={() => navigate('/navigating', { state: { origin, dest, waypoints } })}
+          style={{ marginTop:20, height:44, borderRadius:11, width:'100%', fontWeight:800, fontSize:13.5, cursor:'pointer', background:'#14807A', color:'#fff' }}>
+          이 코스로 출발하기
+        </button>
+      </div>
+    )
   }
 
   if (step === 'input') {
     return (
       <div style={{ maxWidth:680, margin:'0 auto', padding:'30px 26px 80px' }}>
         <h1 style={{ fontSize:28, fontWeight:800, letterSpacing:'-0.8px', marginBottom:6 }}>안심 경로 길찾기</h1>
-        <p style={{ fontSize:15, color:'#5B6C78', marginBottom:22 }}>출발지와 목적지를 입력하면 터널 회피 경로와 최단 경로를 비교해드려요.</p>
+        <p style={{ fontSize:15, color:'#5B6C78', marginBottom:22 }}>터널 회피 경로와 최단 경로 비교 제공</p>
 
         <div style={{ background:'#F6F8FA', border:'1px solid #E4EAEF', borderRadius:13, padding:'5px 13px', marginBottom:16 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:11, padding:'12px 0' }}>
-            <span style={{ width:9, height:9, borderRadius:'50%', background:'#14807A', flexShrink:0 }} />
-            <input value={origin} onChange={e => setOrigin(e.target.value)} placeholder="서울 (출발)"
-              style={{ flex:1, border:'none', background:'transparent', fontSize:13, fontWeight:600, color:'#16242E' }} />
+          <div style={{ padding:'12px 0' }}>
+            <PlaceAutocomplete value={origin} onChange={setOrigin} dotColor="#14807A" placeholder="서울 (출발)" />
           </div>
           <div style={{ borderBottom:'1px solid #E9EDF1' }} />
-          <div style={{ display:'flex', alignItems:'center', gap:11, padding:'12px 0' }}>
-            <span style={{ width:9, height:9, borderRadius:'50%', background:'#D45B4E', flexShrink:0 }} />
-            <input value={dest} onChange={e => setDest(e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="강릉시 경포해변"
-              style={{ flex:1, border:'none', background:'transparent', fontSize:13, fontWeight:600, color:'#16242E' }} />
+          <div style={{ padding:'12px 0' }}>
+            <PlaceAutocomplete value={dest} onChange={setDest} onEnter={search} dotColor="#D45B4E" placeholder="강릉시 경포해변" />
           </div>
         </div>
 
         <button onClick={search} disabled={!origin.trim() || !dest.trim() || loading}
           style={{ height:44, borderRadius:12, background:'#14807A', color:'#fff', fontWeight:800, fontSize:13.5, width:'100%', marginTop:16, cursor:'pointer', opacity: (!origin.trim() || !dest.trim() || loading) ? 0.45 : 1 }}>
-          안심 경로 찾기
+          {loading ? '경로 계산 중...' : '안심 경로 찾기'}
         </button>
 
         <div style={{ marginTop:22 }}>
@@ -74,6 +170,7 @@ export default function RoutePage() {
   }
 
   if (step === 'compare') {
+    const topDiff = tunnels.length ? Math.max(...tunnels.map(t => t.diff)) : null
     return (
       <div style={{ maxWidth:720, margin:'0 auto', padding:'30px 26px 80px' }}>
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
@@ -91,38 +188,46 @@ export default function RoutePage() {
             </div>
             <div style={{ display:'flex', gap:14, marginTop:10 }}>
               <div>
-                <div style={{ fontWeight:800, fontSize:16 }}>3시간 12분</div>
+                <div style={{ fontWeight:800, fontSize:16 }}>
+                  {result.avoid.durationMin >= 60 ? `${Math.floor(result.avoid.durationMin / 60)}시간 ${result.avoid.durationMin % 60}분` : `${result.avoid.durationMin}분`}
+                </div>
                 <div style={{ fontSize:10.5, color:'#8A98A2' }}>소요 시간</div>
               </div>
               <div>
-                <div style={{ fontWeight:800, fontSize:16 }}>+22분</div>
+                <div style={{ fontWeight:800, fontSize:16 }}>{result.avoid.distanceKm - result.shortest.distanceKm >= 0 ? '+' : ''}{result.avoid.durationMin - result.shortest.durationMin}분</div>
                 <div style={{ fontSize:10.5, color:'#8A98A2' }}>최단 대비</div>
               </div>
             </div>
-            <p style={{ fontSize:10.5, color:'#5B6C78', marginTop:10, lineHeight:1.5 }}>7번 국도 동해안 라인 경유 · 터널 노출 없음</p>
+            <p style={{ fontSize:10.5, color:'#5B6C78', marginTop:10, lineHeight:1.5 }}>{dest} 방면 국도·해안도로 경유 · 터널 노출 없음</p>
           </div>
 
           <div onClick={() => { setSelectedRoute('shortest'); setStep('detail') }}
             style={{ border:'1px solid #E4EAEF', borderRadius:13, padding:'13px 14px', cursor:'pointer' }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
               <span style={{ fontWeight:800, fontSize:14, color:'#5B6C78' }}>최단 루트</span>
-              <span style={{ fontSize:11, fontWeight:700, color:'#A53E33', background:'#FBEAE7', borderRadius:99, padding:'4px 10px' }}>터널 4개</span>
+              <span style={{ fontSize:11, fontWeight:700, color:'#A53E33', background:'#FBEAE7', borderRadius:99, padding:'4px 10px' }}>터널 {result.shortest.tunnelCount}개</span>
             </div>
             <div style={{ display:'flex', gap:14, marginTop:10 }}>
               <div>
-                <div style={{ fontWeight:800, fontSize:16, color:'#5B6C78' }}>2시간 50분</div>
+                <div style={{ fontWeight:800, fontSize:16, color:'#5B6C78' }}>
+                  {result.shortest.durationMin >= 60 ? `${Math.floor(result.shortest.durationMin / 60)}시간 ${result.shortest.durationMin % 60}분` : `${result.shortest.durationMin}분`}
+                </div>
                 <div style={{ fontSize:10.5, color:'#8A98A2' }}>소요 시간</div>
               </div>
-              <div>
-                <div style={{ fontWeight:800, fontSize:16, color:'#A53E33' }}>난이도 5</div>
-                <div style={{ fontSize:10.5, color:'#8A98A2' }}>최고 터널</div>
+              {topDiff && (
+                <div>
+                  <div style={{ fontWeight:800, fontSize:16, color:'#A53E33' }}>난이도 {topDiff}</div>
+                  <div style={{ fontSize:10.5, color:'#8A98A2' }}>최고 터널</div>
+                </div>
+              )}
+            </div>
+            {result.shortest.tunnels.length > 0 && (
+              <div style={{ display:'flex', gap:4, marginTop:11, flexWrap:'wrap' }}>
+                {result.shortest.tunnels.slice(0, 3).map(t => (
+                  <span key={t.id} style={{ fontSize:9, color:'#A53E33', background:'#FBEAE7', borderRadius:5, padding:'4px 6px' }}>{t.name}</span>
+                ))}
               </div>
-            </div>
-            <div style={{ display:'flex', gap:4, marginTop:11 }}>
-              {MOCK_RESULT.shortest.tunnelNames.slice(0, 2).map(name => (
-                <span key={name} style={{ fontSize:9, color:'#A53E33', background:'#FBEAE7', borderRadius:5, padding:'4px 6px' }}>{name}</span>
-              ))}
-            </div>
+            )}
           </div>
         </div>
       </div>
@@ -130,34 +235,26 @@ export default function RoutePage() {
   }
 
   return (
-    <div style={{ maxWidth:900, margin:'0 auto', padding:'30px 26px 80px' }}>
+    <div style={{ maxWidth:640, margin:'0 auto', padding:'30px 26px 80px' }}>
       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
         <span onClick={() => setStep('compare')} style={{ fontSize:20, color:'#8A98A2', cursor:'pointer' }}>‹</span>
         <span style={{ fontSize:14, fontWeight:700 }}>{origin} → {dest}</span>
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 360px', gap:24, marginTop:20 }}>
-        <div style={{ position:'relative', borderRadius:14, overflow:'hidden', minHeight:420, background:'#EAF0F3', border:'1px solid #E4EAEF' }}>
-          <svg viewBox="0 0 500 400" preserveAspectRatio="none" style={{ position:'absolute', inset:0, width:'100%', height:'100%' }}>
-            {selectedRoute === 'avoid' ? (
-              <path d="M70 360 C 220 330, 250 160, 440 110" fill="none" stroke="#14807A" strokeWidth={6} strokeLinecap="round" strokeDasharray="2 11" />
-            ) : (
-              <path d="M70 360 C 200 300, 300 280, 440 110" fill="none" stroke="#C3CDD5" strokeWidth={5} strokeLinecap="round" />
-            )}
-          </svg>
-
-          <div style={{ position:'absolute', left:58, top:348, width:26, height:26, borderRadius:'50%', background:'#fff', border:'4px solid #14807A' }} />
-          <div style={{ position:'absolute', left:428, top:98, width:26, height:26, borderRadius:'50%', background:'#fff', border:'4px solid #D45B4E' }} />
-
-          {selectedRoute === 'shortest' && (
-            <div style={{ position:'absolute', left:236, top:286, fontSize:9, fontWeight:700, color:'#A53E33', background:'#fff', border:'1px solid #E3A99F', borderRadius:6, padding:'4px 7px' }}>
-              대관령1터널 · 난이도5
+      <div style={{ display:'flex', flexDirection:'column', gap:20, marginTop:20 }}>
+        <div style={{ position:'relative', borderRadius:14, overflow:'hidden', height:300, flexShrink:0, border:'1px solid #E4EAEF' }}>
+          <MockStreetMap
+            showPath
+            markers={[
+              { id:'o', label:'출발', query: origin, color:'#14807A' },
+              ...(selectedRoute === 'shortest' ? tunnels.map(t => ({ id:t.id, label:t.name, query:t.name, color:'#A53E33' })) : []),
+              { id:'d', label:'도착', query: dest, color:'#D45B4E' },
+            ]}
+          >
+            <div style={{ position:'absolute', top:14, right:14, fontSize:11, fontWeight:700, color:'#5B6C78', background:'rgba(255,255,255,.9)', borderRadius:7, padding:'6px 10px' }}>
+              {selectedRoute === 'avoid' ? '터널 회피 루트' : '최단 루트'}
             </div>
-          )}
-
-          <div style={{ position:'absolute', top:18, left:20, fontSize:11, fontWeight:700, color:'#5B6C78', background:'rgba(255,255,255,.9)', borderRadius:7, padding:'6px 10px' }}>
-            {selectedRoute === 'avoid' ? '터널 회피 루트' : '최단 루트'}
-          </div>
+          </MockStreetMap>
         </div>
 
         <div>
@@ -195,10 +292,22 @@ export default function RoutePage() {
           {selectedRoute === 'avoid' && (
             <>
               <p style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'#8A98A2', letterSpacing:'0.05em', margin:'15px 0 9px' }}>주요 경유</p>
-              {MOCK_RESULT.avoid.waypoints.map(wp => (
+              {result.avoid.waypoints.map(wp => (
                 <div key={wp} style={{ display:'flex', alignItems:'center', gap:9, fontSize:11.5, color:'#5B6C78', marginBottom:6 }}>
                   <span style={{ width:6, height:6, borderRadius:'50%', background:'#C3CDD5', flexShrink:0 }} />
                   {wp}
+                </div>
+              ))}
+            </>
+          )}
+
+          {selectedRoute === 'shortest' && tunnels.length > 0 && (
+            <>
+              <p style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'#8A98A2', letterSpacing:'0.05em', margin:'15px 0 9px' }}>지나는 터널</p>
+              {tunnels.map(t => (
+                <div key={t.id} style={{ display:'flex', alignItems:'center', gap:9, fontSize:11.5, color:'#5B6C78', marginBottom:6 }}>
+                  <span style={{ width:6, height:6, borderRadius:'50%', background:'#D45B4E', flexShrink:0 }} />
+                  {t.name} · 난이도 {t.diff}단계
                 </div>
               ))}
             </>
@@ -208,7 +317,7 @@ export default function RoutePage() {
             onClick={() => navigate('/navigating', {
               state: {
                 origin, dest, durationMin: route.durationMin, distanceKm: route.distanceKm,
-                ...(selectedRoute === 'shortest' ? { tunnel } : {}),
+                ...(selectedRoute === 'shortest' ? { tunnel: tunnels[0], tunnels } : {}),
               },
             })}
             style={{
