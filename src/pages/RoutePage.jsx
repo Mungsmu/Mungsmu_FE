@@ -4,6 +4,7 @@ import { TUNNELS, REGIONS } from '../data/mock.js'
 import MockStreetMap from '../components/MockStreetMap.jsx'
 import PlaceAutocomplete from '../components/PlaceAutocomplete.jsx'
 import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
+import { fetchRoute, traceTunnels } from '../lib/route.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const RECENT = ['속초 해수욕장', '양양 낙산사', '강릉 경포해변']
@@ -20,8 +21,9 @@ const MOCK_RESULT = {
   },
 }
 
-// 출발지·목적지 실좌표로 거리(직선거리 보정)·소요시간을 추정하고,
-// 목적지가 속한 강원 시군을 매칭해 그 지역에 실제로 등록된 터널들을 "최단 루트"에 연결한다.
+// 출발지·목적지를 실좌표로 바꾼 뒤 Valhalla로 실도로 경로 2개(최단 / 고속도로 회피)를 계산한다.
+// 거리·소요시간은 실제 경로 기준. 목적지가 속한 강원 시군을 매칭해 그 지역 터널들을 "최단 루트"에 연결한다.
+// Valhalla 호출이 실패하면 예전 방식(직선거리 보정 추정치)으로 폴백.
 async function computeRouteResult(originStr, destStr) {
   if (!KAKAO_KEY) return null
   try {
@@ -31,18 +33,39 @@ async function computeRouteResult(originStr, destStr) {
 
     const straightKm = haversineM(originPlace, destPlace) / 1000
     const region = REGIONS.find(r => destPlace.address.includes(r.name) || destPlace.name.includes(r.name) || destStr.includes(r.name))
-    const tunnels = region ? TUNNELS.filter(t => t.region === region.name) : []
+    let tunnels = region ? TUNNELS.filter(t => t.region === region.name) : [] // 실측 실패 시 폴백
 
-    const avoidKm = Math.max(1, Math.round(straightKm * 1.3))
-    const shortestKm = Math.max(1, Math.round(straightKm * 1.15))
+    const [shortestRoute, avoidRoute] = await Promise.all([
+      fetchRoute([originPlace, destPlace]),
+      // 터널 회피 루트 = 터널을 아예 지나지 않는 경로 (옛 고갯길 등으로 우회)
+      fetchRoute([originPlace, destPlace], { excludeTunnels: true }),
+    ])
+
+    // 최단 루트가 실제로 지나는 터널을 실측 (500m 이상 장대터널만 집계, 짧은 지하차도 제외)
+    const traced = shortestRoute ? await traceTunnels(shortestRoute.shapes) : null
+    if (traced) {
+      tunnels = traced.filter(s => s.lengthM >= 500).map((s, i) => {
+        // 이름 우선순위: '~터널' > 도로명 > 노선번호(예: "60" → "60번 도로 터널")
+        const name = s.names.find(n => n.includes('터널'))
+          ?? (s.names.find(n => !/^\d+$/.test(n)) ? `${s.names.find(n => !/^\d+$/.test(n))} 터널` : null)
+          ?? (s.names[0] ? `${s.names[0]}번 도로 터널` : '터널 구간')
+        const known = TUNNELS.find(t => s.names.includes(t.name) || t.name === name)
+        return known ?? { id: `trace-${i}`, name, lengthM: s.lengthM, diff: null }
+      })
+    }
+
+    const avoidKm = avoidRoute?.distanceKm ?? Math.max(1, Math.round(straightKm * 1.3))
+    const shortestKm = shortestRoute?.distanceKm ?? Math.max(1, Math.round(straightKm * 1.15))
 
     return {
       avoid: {
-        durationMin: Math.max(5, Math.round((avoidKm / 62) * 60)), distanceKm: avoidKm, tunnelCount: 0,
+        durationMin: avoidRoute?.durationMin ?? Math.max(5, Math.round((avoidKm / 62) * 60)),
+        distanceKm: avoidKm, tunnelCount: 0,
         waypoints: [`${originStr} 출발`, `${destStr} 방면 국도·해안도로 경유`],
       },
       shortest: {
-        durationMin: Math.max(5, Math.round((shortestKm / 78) * 60)), distanceKm: shortestKm,
+        durationMin: shortestRoute?.durationMin ?? Math.max(5, Math.round((shortestKm / 78) * 60)),
+        distanceKm: shortestKm,
         tunnelCount: tunnels.length, tunnels,
       },
     }
@@ -90,6 +113,7 @@ export default function RoutePage() {
         <div style={{ borderRadius:14, overflow:'hidden', height:300, border:'1px solid #E4EAEF', marginBottom:20 }}>
           <MockStreetMap
             showPath
+            routeProfile="avoid"
             markers={allSpots.map((name, i) => ({
               id:`${i}`, label:String(i + 1), query:name,
               color: i === 0 ? '#14807A' : i === allSpots.length - 1 ? '#D45B4E' : '#8A98A2',
@@ -170,7 +194,8 @@ export default function RoutePage() {
   }
 
   if (step === 'compare') {
-    const topDiff = tunnels.length ? Math.max(...tunnels.map(t => t.diff)) : null
+    const diffs = tunnels.map(t => t.diff).filter(Boolean)
+    const topDiff = diffs.length ? Math.max(...diffs) : null
     return (
       <div style={{ maxWidth:720, margin:'0 auto', padding:'30px 26px 80px' }}>
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
@@ -245,6 +270,7 @@ export default function RoutePage() {
         <div style={{ position:'relative', borderRadius:14, overflow:'hidden', height:300, flexShrink:0, border:'1px solid #E4EAEF' }}>
           <MockStreetMap
             showPath
+            routeProfile={selectedRoute}
             markers={[
               { id:'o', label:'출발', query: origin, color:'#14807A' },
               ...(selectedRoute === 'shortest' ? tunnels.map(t => ({ id:t.id, label:t.name, query:t.name, color:'#A53E33' })) : []),
@@ -307,7 +333,7 @@ export default function RoutePage() {
               {tunnels.map(t => (
                 <div key={t.id} style={{ display:'flex', alignItems:'center', gap:9, fontSize:11.5, color:'#5B6C78', marginBottom:6 }}>
                   <span style={{ width:6, height:6, borderRadius:'50%', background:'#D45B4E', flexShrink:0 }} />
-                  {t.name} · 난이도 {t.diff}단계
+                  {t.name}{t.diff ? ` · 난이도 ${t.diff}단계` : t.lengthM ? ` · ${(t.lengthM / 1000).toFixed(1)}km` : ''}
                 </div>
               ))}
             </>

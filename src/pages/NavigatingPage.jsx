@@ -1,14 +1,27 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import MockStreetMap from '../components/MockStreetMap.jsx'
 import TunnelBanner from '../components/TunnelBanner.jsx'
 import TunnelGauge from '../components/TunnelGauge.jsx'
+import { TurnPanel, HazardWidget, SummaryBar, fmtDistM, fmtClock12 } from '../components/NavOverlays.jsx'
 import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
+import { cumulativeDistM, maneuverLabel, fetchRoute } from '../lib/route.js'
 import { speak } from '../lib/speech.js'
 import { getMonthlyPassCount } from '../lib/tunnelStats.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const TUNNEL_TRIGGER_M = 10 // 터널 진입 예상 지점과 이 거리(m) 이내로 좁혀지면 동반 모드 자동 진입
+const DEMO_SPEED_MPS = 140  // 데모 주행 속도(m/s) — 실주행의 약 6배속. 거리뷰 줌에서도 화면을 따라갈 수 있는 수준
+const ON_ROUTE_MAX_M = 250  // GPS 좌표가 경로에서 이내면 "경로 위"로 보고 맵매칭
+const HAZARD_LOOKAHEAD_M = 1200 // 전방 위험구간 감지 범위
+
+// 전방 위험구간 데모 시드 (경로 총거리 대비 비율 위치) — 실데이터(공공데이터 무인단속카메라 등) 연결 지점
+const HAZARD_SEEDS = [
+  { type: '단속', frac: 0.16, speed: 80 },
+  { type: '공사', frac: 0.42, speed: 60 },
+  { type: '사고', frac: 0.66, speed: 40 },
+  { type: '급정거', frac: 0.85, speed: 50 },
+]
 
 function fmtMMSS(totalSec) {
   const m = Math.floor(totalSec / 60)
@@ -31,69 +44,178 @@ export default function NavigatingPage() {
   const [dismissed, setDismissed] = useState(false)
   const [tunnelDistM, setTunnelDistM] = useState(null)
   const [gpsActive, setGpsActive] = useState(false)
+  const [nav, setNav] = useState(null) // { lat, lng, man, distToManM, remainM, remainMin }
   const arrivedSpokenRef = useRef(false)
   const tunnelTriggeredRef = useRef(false)
+  const routeRef = useRef(null)      // { path, cum, totalM, maneuvers, durationMin }
+  const traveledRef = useRef(0)      // 경로 위 누적 이동거리(m)
+  const gpsLiveRef = useRef(false)   // GPS 실측이 주도권을 잡고 있는 동안 데모 주행 정지
+  const lastSpokenManRef = useRef(null)
+  const [signalLost, setSignalLost] = useState(false) // 위치 신호 유실 — 마지막 값 유지 + 패널에 표시
+  const [rerouting, setRerouting] = useState(false)   // 경로 이탈 → 재탐색 중
+  const [routeError, setRouteError] = useState(false) // 경로 데이터 수신 실패
+  const hazardsRef = useRef([])                        // [{ type, atM, speed }] 경로상 위험구간
+  const reroutingRef = useRef(false)
+  const goHome = useCallback(() => navigate('/home'), [navigate])
 
-  // 목적지의 실제 좌표를 구해서, 실시간 GPS와 목적지 사이의 실거리로 진행률(%)을 계산한다.
-  // 카카오 키가 없거나 위치 권한이 없는 등 실측이 불가능하면 이전처럼 타이머 데모로 대체한다.
-  // GPS 신호는 잡히지만(권한은 허용했지만) 실제로는 움직이지 않는 경우(책상에서 테스트 등)도
-  // "실측 모드로 고정"되어 버리면 진행률이 0%에서 영원히 멈춰 아무 일도 안 일어나는 것처럼 보인다.
-  // 그래서 일정 시간 동안 실거리가 의미 있게 변하지 않으면 데모 타이머로 다시 전환한다.
+  // 지도 컴포넌트가 Valhalla 실경로를 받아오면 턴바이턴에 필요한 누적거리 테이블을 준비한다.
+  const handleRoute = (route) => {
+    const cum = cumulativeDistM(route.path)
+    routeRef.current = { ...route, cum, totalM: cum[cum.length - 1] }
+    hazardsRef.current = HAZARD_SEEDS.map(s => ({ ...s, atM: s.frac * routeRef.current.totalM }))
+    setRouteError(false)
+    updateNav(traveledRef.current)
+  }
+
+  // 경로 이탈 시 재탐색: 현재 위치→목적지로 경로를 다시 계산하고 3개 오버레이를 초기 상태로 되돌린다.
+  const reroute = async (here) => {
+    if (reroutingRef.current) return
+    reroutingRef.current = true
+    setRerouting(true)
+    gpsLiveRef.current = false
+    traveledRef.current = 0
+    lastSpokenManRef.current = null
+    setNav(null)
+    setPct(0)
+    speak('경로를 이탈하여 재탐색합니다.')
+    try {
+      const kakao = await loadKakaoMaps(KAKAO_KEY)
+      const place = await resolvePlace(kakao, dest)
+      const route = place ? await fetchRoute([here, place], { excludeTunnels: true }) : null
+      if (route) handleRoute(route)
+      else setRouteError(true)
+    } catch {
+      setRouteError(true)
+    } finally {
+      reroutingRef.current = false
+      setRerouting(false)
+    }
+  }
+
+  // 경로 위 누적 이동거리 → 현재 좌표·다음 안내·남은 거리/시간을 계산해 화면과 음성에 반영
+  const updateNav = (traveledM) => {
+    const r = routeRef.current
+    if (!r || !r.totalM) return
+    traveledRef.current = traveledM
+
+    let lo = 0, hi = r.cum.length - 1
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (r.cum[mid] < traveledM) lo = mid + 1; else hi = mid }
+    const idx = lo
+    const [lat, lng] = r.path[Math.min(idx, r.path.length - 1)]
+
+    const man = r.maneuvers.find(m => m.idx > idx && m.type > 3) ?? null // 출발(1~3) 안내는 건너뜀
+    const distToManM = man ? Math.max(0, r.cum[Math.min(man.idx, r.cum.length - 1)] - traveledM) : 0
+    // 그 다음 안내 (실제 내비의 "다음 ↑ 2.1km" 미리보기 스택)
+    const man2 = man ? (r.maneuvers.find(m => m.idx > man.idx && m.type > 3) ?? null) : null
+    const distMan2M = man2 ? Math.max(0, r.cum[Math.min(man2.idx, r.cum.length - 1)] - r.cum[Math.min(man.idx, r.cum.length - 1)]) : 0
+    // 지금 달리고 있는 도로 = 마지막으로 지난 안내 지점의 도로명
+    let curStreet = ''
+    for (const m of r.maneuvers) { if (m.idx > idx) break; if (m.street) curStreet = m.street }
+    const remainM = Math.max(0, r.totalM - traveledM)
+    const remainMin = Math.ceil((r.durationMin ?? durationMin) * remainM / r.totalM)
+    // 표시용 속도: 경로의 실제 평균 속도(총거리/총시간)에 구간별 미세 변화를 더한 값
+    const avgKmh = (r.totalM / ((r.durationMin ?? durationMin) * 60)) * 3.6
+    const speedKmh = Math.round(avgKmh * (1 + 0.12 * Math.sin(traveledM / 2600)))
+    // 진행 방향(도북 기준 방위각) — 몇 점 앞의 경로 좌표를 보고 계산해 마커 화살표를 돌린다
+    const j = Math.min(idx + 3, r.path.length - 1)
+    const toRad = (d) => (d * Math.PI) / 180
+    const heading = (Math.atan2((r.path[j][1] - lng) * Math.cos(toRad(lat)), r.path[j][0] - lat) * 180 / Math.PI + 360) % 360
+    // 실제 내비처럼 거리 수준 줌: 평상시 레벨 4(~100m), 회전 600m 이내면 교차로 확대 레벨 3(~50m)
+    const zoom = man && distToManM < 600 ? 3 : 4
+    // 전방 위험구간: 감지 범위 안에서 아직 통과하지 않은 것 중 가장 가까운 하나만.
+    // 데모 주행은 배속이 있어 실측보다 감지 범위를 넓힌다 (노출 시간 약 15초 확보)
+    const lookaheadM = gpsLiveRef.current ? HAZARD_LOOKAHEAD_M : Math.max(HAZARD_LOOKAHEAD_M, DEMO_SPEED_MPS * 15)
+    const hz = hazardsRef.current
+      .filter(h => h.atM - traveledM > -20 && h.atM - traveledM <= lookaheadM)
+      .sort((a, b) => a.atM - b.atM)[0] ?? null
+    const hazard = hz ? { type: hz.type, distM: Math.max(0, hz.atM - traveledM), speed: hz.speed } : null
+
+    // 안내 지점이 가까워지면 한 번만 음성 안내
+    if (man && man.idx !== lastSpokenManRef.current && distToManM <= 700) {
+      lastSpokenManRef.current = man.idx
+      speak(`잠시 후 ${maneuverLabel(man)}입니다.`)
+    }
+
+    setNav({ lat, lng, heading, zoom, idx, man, distToManM, man2, distMan2M, curStreet, remainM, remainMin, speedKmh, hazard })
+    setPct(Math.min(100, (traveledM / r.totalM) * 100))
+  }
+
+  // ① 데모 주행: GPS 실측이 없거나 정지 상태(책상 테스트)일 때 경로를 따라 자동 주행
+  useEffect(() => {
+    const TICK_MS = 500
+    const t = setInterval(() => {
+      const r = routeRef.current
+      if (!r || gpsLiveRef.current || reroutingRef.current) return
+      const step = DEMO_SPEED_MPS * (TICK_MS / 1000)
+      updateNav(Math.min(traveledRef.current + step, r.totalM))
+    }, TICK_MS)
+    return () => clearInterval(t)
+  }, [])
+
+  // ② GPS 실측: 실제로 움직이고 경로 근처에 있으면 좌표를 경로 위 가장 가까운 지점으로
+  //    스냅(맵매칭)해 실측 기반으로 안내한다. 경로 이탈·정지 시에는 ①의 데모 주행이 이어받고,
+  //    실경로 자체를 못 받은 환경에서는 예전처럼 목적지 직선거리 기반 진행률로 폴백한다.
   useEffect(() => {
     let cancelled = false
     let watchId = null
-    let mockTimer = null
     let stallTimer = null
-    let usingGps = false
     let startDist = null
     let lastRemain = null
     let lastMoveAt = Date.now()
 
-    const startMock = () => {
-      usingGps = false
-      setGpsActive(false)
-      if (mockTimer) return
-      mockTimer = setInterval(() => setPct(p => Math.min(p + 100 / 20, 100)), 500)
-    }
-    const stopMock = () => { if (mockTimer) { clearInterval(mockTimer); mockTimer = null } }
-
     ;(async () => {
-      if (!KAKAO_KEY || !navigator.geolocation) { startMock(); return }
+      if (!KAKAO_KEY || !navigator.geolocation) return
       try {
         const kakao = await loadKakaoMaps(KAKAO_KEY)
         const place = await resolvePlace(kakao, dest)
-        if (cancelled) return
-        if (!place) { startMock(); return }
+        if (cancelled || !place) return
 
         watchId = navigator.geolocation.watchPosition(
           pos => {
-            const remain = haversineM({ lat: pos.coords.latitude, lng: pos.coords.longitude }, place)
+            setSignalLost(false) // 신호 복구 — 정상 갱신 재개
+            const here = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+            const remain = haversineM(here, place)
             if (startDist == null) startDist = Math.max(remain, 1)
             // 이전 측정과 5m 이상 차이 날 때만 "실제로 움직였다"고 본다 (GPS 노이즈 필터링 겸 정지 감지)
-            if (lastRemain == null || Math.abs(lastRemain - remain) > 5) {
-              lastRemain = remain
-              lastMoveAt = Date.now()
-              usingGps = true
-              setGpsActive(true)
-              stopMock()
-              setPct(Math.min(100, Math.max(0, ((startDist - remain) / startDist) * 100)))
+            if (lastRemain != null && Math.abs(lastRemain - remain) <= 5) return
+            lastRemain = remain
+            lastMoveAt = Date.now()
+
+            const r = routeRef.current
+            if (r) {
+              let best = 0, bestD = Infinity
+              for (let i = 0; i < r.path.length; i++) {
+                const d = haversineM(here, { lat: r.path[i][0], lng: r.path[i][1] })
+                if (d < bestD) { bestD = d; best = i }
+              }
+              if (bestD <= ON_ROUTE_MAX_M) {
+                gpsLiveRef.current = true
+                setGpsActive(true)
+                updateNav(r.cum[best])
+                return
+              }
+              // 실측 주행 중이었는데 경로에서 벗어남 → 경로 이탈로 보고 재탐색
+              if (gpsLiveRef.current) { reroute(here); return }
             }
+            // 실경로가 없으면(계산 실패 등) 직선거리 기반 진행률 폴백
+            setGpsActive(true)
+            setPct(Math.min(100, Math.max(0, ((startDist - remain) / startDist) * 100)))
           },
-          () => startMock(),
+          // 위치 신호 유실: 마지막 유효 값은 그대로 두고 상단 패널에 재탐색 중임만 표시
+          () => { if (gpsLiveRef.current) setSignalLost(true) },
           { enableHighAccuracy: true, maximumAge: 3000, timeout: 8000 },
         )
-        setTimeout(() => { if (!usingGps) startMock() }, 4000)
         stallTimer = setInterval(() => {
-          if (usingGps && Date.now() - lastMoveAt > 6000) startMock()
+          if (gpsLiveRef.current && Date.now() - lastMoveAt > 6000) {
+            gpsLiveRef.current = false // 정지 감지 → 데모 주행이 이어받는다
+            setGpsActive(false)
+          }
         }, 2000)
-      } catch {
-        if (!cancelled) startMock()
-      }
+      } catch { /* GPS 불가 — 데모 주행만으로 진행 */ }
     })()
 
     return () => {
       cancelled = true
-      stopMock()
       if (stallTimer != null) clearInterval(stallTimer)
       if (watchId != null) navigator.geolocation.clearWatch(watchId)
     }
@@ -163,18 +285,48 @@ export default function NavigatingPage() {
     <div style={{ position: 'fixed', inset: 0, zIndex: 60, fontFamily: 'Pretendard, sans-serif' }}>
       <MockStreetMap
         showPath
+        routeProfile="avoid"
+        onRoute={handleRoute}
+        navPosition={nav && !arrived ? { lat: nav.lat, lng: nav.lng, heading: nav.heading, zoom: nav.zoom } : null}
+        navGuide={nav && !arrived ? { progressIdx: nav.idx, turnIdx: nav.man?.idx ?? null, turnType: nav.man?.type } : null}
+        routeStyle={{ color: '#1A6DE3', weight: 9 }}
         markers={[origin, ...waypoints, dest].map((name, i, arr) => ({
           id:`${i}`, label: i === 0 ? '출발' : i === arr.length - 1 ? '도착' : String(i + 1), query:name,
           color: i === 0 ? '#8A98A2' : i === arr.length - 1 ? '#D45B4E' : '#14807A',
         }))}
       >
-        {/* 상단 상태 · 나가기 */}
-        <div style={{ position: 'absolute', top: 16, left: 16, right: 16, display: 'flex', alignItems: 'center', gap: 14, zIndex: 1, pointerEvents: 'auto' }}>
-          <span style={{ fontSize: 12.5, fontWeight: 700, color: '#5B6C78', background: '#fff', border: '1px solid #E4EAEF', borderRadius: 99, padding: '7px 14px' }}>
-            {arrived ? '도착 완료' : '주행 중 · 내비게이션'}
-          </span>
-          <button onClick={() => navigate('/home')} style={{ marginLeft: 'auto', color: '#5B6C78', fontWeight: 700, fontSize: 13, background: '#fff', border: '1px solid #E4EAEF', borderRadius: 99, padding: '7px 14px', cursor: 'pointer' }}>나가기 ✕</button>
-        </div>
+        {/* [기능 1] 턴바이턴 안내 패널 — 도착·터널 접근 시에는 숨긴다 */}
+        {nav?.man && !arrived && !approachingSoon ? (
+          <>
+            <TurnPanel
+              manType={nav.man.type}
+              distText={fmtDistM(nav.distToManM)}
+              streetText={nav.man.street}
+              subLabel={maneuverLabel(nav.man)}
+              subManType={nav.man2?.type ?? null}
+              subDistText={nav.man2 ? fmtDistM(nav.distMan2M) : ''}
+              signalLost={signalLost}
+              rerouting={rerouting}
+              onExit={goHome}
+            />
+            {/* GPS 상태 미니 배지 */}
+            <span style={{ position: 'absolute', top: 99, right: 16, zIndex: 1, fontSize: 10.5, fontWeight: 700, color: '#5B6C78', background: 'rgba(255,255,255,.92)', borderRadius: 99, padding: '4px 10px' }}>
+              {gpsActive ? 'GPS 실측' : '경로 시뮬레이션'}
+            </span>
+          </>
+        ) : (
+          <div style={{ position: 'absolute', top: 16, right: 16, display: 'flex', alignItems: 'center', gap: 8, zIndex: 1, pointerEvents: 'auto' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#5B6C78', background: 'rgba(255,255,255,.94)', border: '1px solid #E4EAEF', borderRadius: 99, padding: '7px 13px' }}>
+              {arrived ? '도착 완료' : rerouting ? '경로 재탐색 중…' : gpsActive ? '주행 중 · GPS 실측' : '주행 중 · 내비게이션'}
+            </span>
+            <button onClick={goHome} style={{ color: '#5B6C78', fontWeight: 700, fontSize: 13, background: 'rgba(255,255,255,.94)', border: '1px solid #E4EAEF', borderRadius: 99, padding: '7px 13px', cursor: 'pointer' }}>나가기 ✕</button>
+          </div>
+        )}
+
+        {/* [기능 2] 전방 위험구간 경고 — 감지된 경우에만 렌더 (미감지 시 DOM 자체가 없음) */}
+        {nav?.hazard && !arrived && (
+          <HazardWidget type={nav.hazard.type} distText={fmtDistM(nav.hazard.distM)} speed={nav.hazard.speed} />
+        )}
 
         {approachingSoon && (
           <>
@@ -216,18 +368,29 @@ export default function NavigatingPage() {
           </div>
         )}
 
-        {/* 하단 경로 진행바 + 액션 */}
+        {/* 하단: 속도계 + [기능 3] 주행 요약 바 */}
         <div style={{ position: 'absolute', left: 16, right: 16, bottom: 16, pointerEvents: 'auto' }}>
-          <div style={{ background: '#fff', borderRadius: 14, padding: '13px 16px', boxShadow: '0 6px 20px rgba(20,40,60,.12)' }}>
-            <p style={{ fontSize: 13, fontWeight: 700, color: '#16242E', marginBottom: 8 }}>{origin} → {dest}</p>
-            <div style={{ height: 7, borderRadius: 99, background: '#DCE3E8', overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${pct}%`, background: approachingSoon ? '#D45B4E' : '#14807A', borderRadius: 99, transition: 'width .4s linear' }} />
+          {!arrived && nav && (
+            <div style={{ display: 'flex', alignItems: 'flex-end', marginBottom: 10, pointerEvents: 'none' }}>
+              {/* 속도계 */}
+              <div style={{ width: 62, height: 62, borderRadius: '50%', background: '#fff', border: '4px solid #1A6DE3', boxShadow: '0 6px 18px rgba(20,40,60,.22)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <span style={{ fontSize: 21, fontWeight: 800, lineHeight: 1, color: '#16242E', fontVariantNumeric: 'tabular-nums' }}>{nav.speedKmh}</span>
+                <span style={{ fontSize: 8.5, fontWeight: 700, color: '#8A98A2', marginTop: 2 }}>km/h</span>
+              </div>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 11.5, color: '#8A98A2' }}>
-              <span>{distanceKm}km</span>
-              <span>{durationMin}분 예상</span>
-            </div>
-          </div>
+          )}
+
+          <SummaryBar
+            street={nav?.curStreet ?? ''}
+            remainText={nav ? `${(nav.remainM / 1000).toFixed(1)}km` : `${distanceKm}km`}
+            etaText={nav ? fmtClock12(new Date(Date.now() + nav.remainMin * 60000)) : '--:--'}
+            pct={Math.round(pct)}
+            danger={approachingSoon}
+            arrived={arrived}
+            origin={origin}
+            dest={dest}
+            error={routeError}
+          />
 
           {approachingSoon ? (
             <div style={{ display: 'flex', gap: 9, marginTop: 10 }}>

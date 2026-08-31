@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { loadKakaoMaps, resolvePlace } from '../lib/kakaoMap.js'
+import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
+import { fetchRoute } from '../lib/route.js'
+import { turnArrowSvg } from './NavOverlays.jsx'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 
@@ -19,14 +21,26 @@ const BLOCKS = [
 ]
 const SEOUL = { lat: 37.5665, lng: 126.9780 }
 
-export default function MockStreetMap({ children, markers, showPath = false }) {
+// routeProfile: 'shortest'(실도로 최단) | 'avoid'(고속도로 회피 실도로) | undefined(마커 잇는 직선)
+// onRoute: 실도로 경로 계산 완료 시 { path, maneuvers, ... } 전달 (내비게이션 페이지가 턴바이턴에 사용)
+// navPosition: { lat, lng, heading?, zoom? } — 주행 중 현재 위치. 지정되면 헤딩 화살표 마커가
+//   경로를 따라 움직이고 지도가 따라가며, zoom(카카오 레벨)으로 회전 접근 시 자동 확대를 제어한다.
+// routeStyle: { color, weight } — 경로선 스타일 (내비 화면은 굵은 파란 선)
+// navGuide: { progressIdx, turnIdx, turnType } — 주행 진행 인덱스와 다음 회전 지점.
+//   지정되면 지나온 길은 옅게, 남은 길은 선명하게 나뉘고, 회전 지점에 방향 배지와
+//   진출 구간(주황 강조선 + 화살촉)이 그려져 어느 길로 빠지는지 지도에서 바로 보인다.
+export default function MockStreetMap({ children, markers, showPath = false, routeProfile, onRoute, navPosition, routeStyle, navGuide }) {
   const [coords, setCoords] = useState(null)
   const [geoError, setGeoError] = useState(false)
   const [kakaoError, setKakaoError] = useState(false)
   const [kakaoReady, setKakaoReady] = useState(false)
   const [resolvedMarkers, setResolvedMarkers] = useState([])
+  const [routePath, setRoutePath] = useState(null) // Valhalla가 준 실도로 좌표 [[lat,lng],...]
   const containerRef = useRef(null)
   const mapObjRef = useRef({})
+  const onRouteRef = useRef(onRoute)
+  onRouteRef.current = onRoute
+  const navigatingRef = useRef(false)
   const markerQuery = markers?.map(m => m.query).join('|') ?? ''
 
   useEffect(() => {
@@ -54,13 +68,47 @@ export default function MockStreetMap({ children, markers, showPath = false }) {
   }, [])
 
   // 실제 GPS 좌표를 받으면 현재 위치 마커를 이동 (경로 마커가 없을 때만 지도 중심도 이동)
+  // 단, 내비 주행 중(navPosition 제어)에는 GPS 좌표가 마커를 뺏어가지 않게 한다.
   useEffect(() => {
     const { kakao, map, posMarker } = mapObjRef.current
-    if (!coords || !kakao || !map) return
+    if (!coords || !kakao || !map || navigatingRef.current) return
     const pos = new kakao.maps.LatLng(coords.lat, coords.lng)
     posMarker.setPosition(pos)
     if (!markers?.length) map.setCenter(pos)
   }, [coords, markerQuery])
+
+  // 주행 중 현재 위치 — 실제 내비처럼 진행 방향을 가리키는 화살표 마커가 경로를 따라 움직이고,
+  // 지도가 부드럽게 따라가며 회전 지점에 가까워지면 자동으로 확대된다.
+  useEffect(() => {
+    const { kakao, map, posMarker } = mapObjRef.current
+    if (!navPosition || !kakao || !map) return
+    const first = !navigatingRef.current
+    navigatingRef.current = true
+    const pos = new kakao.maps.LatLng(navPosition.lat, navPosition.lng)
+
+    if (first) {
+      posMarker.setMap(null) // 기본 핀 대신 헤딩 화살표 오버레이 사용
+      const el = document.createElement('div')
+      el.style.cssText = 'width:46px;height:46px;border-radius:50%;background:#fff;box-shadow:0 4px 16px rgba(15,50,90,.45);display:flex;align-items:center;justify-content:center;border:2.5px solid #1A6DE3'
+      el.innerHTML = '<svg width="28" height="28" viewBox="0 0 24 24" style="transition:transform .45s ease"><path d="M12 2.5 L18.5 19.5 L12 15.8 L5.5 19.5 Z" fill="#1A6DE3"/></svg>'
+      const overlay = new kakao.maps.CustomOverlay({ position: pos, content: el, zIndex: 10 })
+      overlay.setMap(map)
+      mapObjRef.current.navOverlay = overlay
+      mapObjRef.current.navArrowEl = el.firstChild
+    }
+    mapObjRef.current.navOverlay.setPosition(pos)
+    if (navPosition.heading != null && mapObjRef.current.navArrowEl) {
+      mapObjRef.current.navArrowEl.style.transform = `rotate(${navPosition.heading}deg)`
+    }
+    if (navPosition.zoom && map.getLevel() !== navPosition.zoom) map.setLevel(navPosition.zoom, { animate: true })
+    // 실제 내비처럼 차량이 화면 하단에 오도록, 지도 중심을 진행 방향 앞쪽으로 당긴다
+    const AHEAD_M = { 3: 130, 4: 260, 5: 520, 7: 1500 }
+    const aheadM = AHEAD_M[navPosition.zoom] ?? 260
+    const rad = ((navPosition.heading ?? 0) * Math.PI) / 180
+    const cLat = navPosition.lat + (aheadM * Math.cos(rad)) / 111320
+    const cLng = navPosition.lng + (aheadM * Math.sin(rad)) / (111320 * Math.cos((navPosition.lat * Math.PI) / 180))
+    map.panTo(new kakao.maps.LatLng(cLat, cLng))
+  }, [navPosition])
 
   // markers prop(장소명)을 실제 좌표로 검색
   useEffect(() => {
@@ -73,6 +121,72 @@ export default function MockStreetMap({ children, markers, showPath = false }) {
     })).then(list => { if (!cancelled) setResolvedMarkers(list.filter(Boolean)) })
     return () => { cancelled = true }
   }, [kakaoReady, markerQuery])
+
+  // 실도로 경로 계산 (routeProfile이 지정된 경우에만) — 도착 전까지는 직선 폴리라인이 먼저 보인다
+  useEffect(() => {
+    setRoutePath(null)
+    if (!showPath || !routeProfile || resolvedMarkers.length < 2) return
+    let cancelled = false
+    // 'avoid' 프로필 = 터널 완전 배제 경로 (Valhalla exclude_tunnels)
+    fetchRoute(resolvedMarkers, { excludeTunnels: routeProfile === 'avoid' })
+      .then(route => {
+        if (cancelled || !route) return
+        setRoutePath(route.path)
+        onRouteRef.current?.(route)
+      })
+    return () => { cancelled = true }
+  }, [resolvedMarkers, showPath, routeProfile])
+
+  // 주행 안내 강조 — 지나온 길/남은 길 구분 + 회전 지점 배지 + 진출 구간 강조선
+  useEffect(() => {
+    const { kakao, map, polyline } = mapObjRef.current
+    if (!kakao || !map || !navGuide || !routePath?.length) return
+    const toLL = ([la, ln]) => new kakao.maps.LatLng(la, ln)
+
+    // 전체 경로선은 "지나온 길" 색(옅은 회청색)으로 내려앉힌다 (재탐색으로 다시 그려져도 유지)
+    polyline?.setOptions({ strokeColor: '#B9C8DF', strokeOpacity: 0.85 })
+    if (!mapObjRef.current.remainLine) {
+      mapObjRef.current.remainLine = new kakao.maps.Polyline({
+        map, path: [], strokeWeight: routeStyle?.weight ?? 9,
+        strokeColor: routeStyle?.color ?? '#1A6DE3', strokeOpacity: 0.95, zIndex: 2,
+      })
+      mapObjRef.current.exitLine = new kakao.maps.Polyline({
+        map, path: [], strokeWeight: (routeStyle?.weight ?? 9) + 1,
+        strokeColor: '#FF7A00', strokeOpacity: 0.95, zIndex: 3, endArrow: true,
+      })
+    }
+    // 남은 경로 = 현재 위치부터 끝까지 (선명한 파랑)
+    mapObjRef.current.remainLine.setPath(routePath.slice(navGuide.progressIdx).map(toLL))
+
+    // 회전 지점이 바뀌었을 때만 배지·진출 강조선을 다시 그린다
+    if (navGuide.turnIdx != null && navGuide.turnIdx !== mapObjRef.current.lastTurnIdx) {
+      mapObjRef.current.lastTurnIdx = navGuide.turnIdx
+      // 회전 직후 진출 구간(거리 기준 ~600m) — 갈림길에서 어느 쪽으로 빠지는지 화살촉으로 표시
+      const exitPts = [routePath[Math.min(navGuide.turnIdx, routePath.length - 1)]]
+      let acc = 0
+      for (let i = navGuide.turnIdx + 1; i < routePath.length && acc < 600; i++) {
+        acc += haversineM(
+          { lat: routePath[i - 1][0], lng: routePath[i - 1][1] },
+          { lat: routePath[i][0], lng: routePath[i][1] },
+        )
+        exitPts.push(routePath[i])
+      }
+      mapObjRef.current.exitLine.setPath(exitPts.map(toLL))
+      mapObjRef.current.turnOverlay?.setMap(null)
+      const el = document.createElement('div')
+      el.style.cssText = 'width:44px;height:44px;border-radius:50%;background:#fff;border:3px solid #FF7A00;box-shadow:0 4px 14px rgba(200,90,0,.45);display:flex;align-items:center;justify-content:center'
+      el.innerHTML = turnArrowSvg(navGuide.turnType, 26, '#FF7A00')
+      const ov = new kakao.maps.CustomOverlay({ position: toLL(routePath[Math.min(navGuide.turnIdx, routePath.length - 1)]), content: el, zIndex: 9 })
+      ov.setMap(map)
+      mapObjRef.current.turnOverlay = ov
+    }
+    // 마지막 안내(도착) 이후에는 진출 강조를 지운다
+    if (navGuide.turnIdx == null && mapObjRef.current.lastTurnIdx != null) {
+      mapObjRef.current.lastTurnIdx = null
+      mapObjRef.current.exitLine.setPath([])
+      mapObjRef.current.turnOverlay?.setMap(null)
+    }
+  }, [navGuide?.progressIdx, navGuide?.turnIdx, routePath])
 
   // 검색된 좌표로 실제 마커/경로선을 그리고 지도를 맞춤
   useEffect(() => {
@@ -97,11 +211,14 @@ export default function MockStreetMap({ children, markers, showPath = false }) {
     })
 
     if (showPath && resolvedMarkers.length >= 2) {
+      // 실도로 경로가 도착했으면 그 좌표로, 아직이면(또는 실패하면) 마커를 잇는 직선으로
+      const pathPoints = routePath ?? resolvedMarkers.map(rm => [rm.lat, rm.lng])
       mapObjRef.current.polyline = new kakao.maps.Polyline({
-        path: resolvedMarkers.map(rm => new kakao.maps.LatLng(rm.lat, rm.lng)),
-        strokeWeight: 5, strokeColor: '#14807A', strokeOpacity: 0.85, strokeStyle: 'solid',
+        path: pathPoints.map(([lat, lng]) => new kakao.maps.LatLng(lat, lng)),
+        strokeWeight: routeStyle?.weight ?? 5, strokeColor: routeStyle?.color ?? '#14807A', strokeOpacity: 0.9, strokeStyle: 'solid',
       })
       mapObjRef.current.polyline.setMap(map)
+      if (routePath) routePath.forEach(([lat, lng]) => bounds.extend(new kakao.maps.LatLng(lat, lng)))
     }
 
     if (resolvedMarkers.length === 1) {
@@ -110,7 +227,7 @@ export default function MockStreetMap({ children, markers, showPath = false }) {
     } else {
       map.setBounds(bounds)
     }
-  }, [resolvedMarkers, showPath])
+  }, [resolvedMarkers, showPath, routePath])
 
   const markerBadge = markers?.length > 0 && (
     <div style={{ position: 'absolute', left: 14, top: 14, background: 'rgba(255,255,255,.92)', borderRadius: 8, padding: '6px 12px', fontSize: 12.5, fontWeight: 700, color: '#16242E', boxShadow: '0 1px 4px rgba(20,40,60,.1)' }}>

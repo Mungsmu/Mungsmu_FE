@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { findUser, saveUser } from '../lib/auth.js'
+import { checkUsername, sendSmsCode, verifySmsCode, signup } from '../lib/auth.js'
 
 const RELATIONS = ['부모', '배우자', '자녀', '형제자매', '기타']
 
@@ -18,32 +18,60 @@ export default function SignUpPage() {
   const [code, setCode] = useState('')
   const [codeSent, setCodeSent] = useState(false)
   const [codeError, setCodeError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   const set = (k) => (e) => {
     setForm(f => ({ ...f, [k]: e.target.value }))
     if (k === 'userId') setIdCheck(null)
   }
 
-  const checkId = () => {
+  const checkId = async () => {
     if (!form.userId.trim()) return
     setIdCheck('checking')
-    setTimeout(() => setIdCheck(findUser(form.userId.trim()) ? 'dup' : 'ok'), 500)
+    try {
+      const available = await checkUsername(form.userId.trim())
+      setIdCheck(available ? 'ok' : 'dup')
+    } catch (e) {
+      setIdCheck(null)
+      alert(e.message)
+    }
   }
 
+  // 비밀번호 규칙은 백엔드(SignupRequest)와 동일: 영문+숫자 포함 8자 이상
+  const passwordOk = /^(?=.*[A-Za-z])(?=.*\d).{8,}$/.test(form.password)
   const canSubmitForm = form.name.trim() && form.phone.trim() && form.email.trim()
     && form.userId.trim() && idCheck === 'ok'
-    && form.password.length >= 8 && form.password === form.passwordConfirm
+    && passwordOk && form.password === form.passwordConfirm
     && form.guardianName.trim() && form.guardianPhone.trim()
 
-  const sendCode = () => { setCodeSent(true); setCodeError('') }
-  const verifyCode = () => {
+  const sendCode = async () => {
+    setCodeError('')
+    try {
+      await sendSmsCode(form.phone.trim())
+      setCodeSent(true)
+    } catch (e) {
+      setCodeError(e.message)
+    }
+  }
+
+  const verifyCode = async () => {
     if (code.trim().length !== 6) { setCodeError('6자리 인증번호를 입력해주세요'); return }
-    saveUser({
-      userId: form.userId.trim(), password: form.password, name: form.name.trim(),
-      phone: form.phone.trim(), email: form.email.trim(),
-      guardianName: form.guardianName.trim(), guardianPhone: form.guardianPhone.trim(), relation: form.relation,
-    })
-    setStep('done')
+    setSubmitting(true)
+    setCodeError('')
+    try {
+      await verifySmsCode(form.phone.trim(), code.trim())
+      await signup({
+        ...form,
+        name: form.name.trim(), phone: form.phone.trim(), email: form.email.trim(),
+        userId: form.userId.trim(),
+        guardianName: form.guardianName.trim(), guardianPhone: form.guardianPhone.trim(),
+      })
+      setStep('done')
+    } catch (e) {
+      setCodeError(e.message)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   if (step === 'done') {
@@ -78,10 +106,10 @@ export default function SignUpPage() {
               {codeSent ? '재전송' : '인증번호 받기'}
             </button>
           </div>
-          {codeSent && <p style={{ fontSize: 12, color: '#2E7D4F', marginBottom: 8 }}>✓ 인증번호가 발송됐어요 (테스트용: 아무 6자리 입력)</p>}
+          {codeSent && <p style={{ fontSize: 12, color: '#2E7D4F', marginBottom: 8 }}>✓ 인증번호가 발송됐어요 (데모: 백엔드 서버 콘솔에서 확인)</p>}
           {codeError && <p style={{ fontSize: 12, color: '#A53E33', marginBottom: 8 }}>{codeError}</p>}
 
-          <button onClick={verifyCode} disabled={!codeSent} style={{ width: '100%', height: 48, borderRadius: 'var(--r-lg)', background: 'var(--primary)', color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer', marginTop: 16, opacity: codeSent ? 1 : 0.4 }}>인증 완료</button>
+          <button onClick={verifyCode} disabled={!codeSent || submitting} style={{ width: '100%', height: 48, borderRadius: 'var(--r-lg)', background: 'var(--primary)', color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer', marginTop: 16, opacity: (codeSent && !submitting) ? 1 : 0.4 }}>{submitting ? '가입 중...' : '인증 완료'}</button>
         </div>
       </div>
     )
@@ -119,7 +147,7 @@ export default function SignUpPage() {
           <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ flex: 1 }}>
               <label style={LABEL}>비밀번호</label>
-              <input type="password" value={form.password} onChange={set('password')} placeholder="8자 이상" style={FIELD} />
+              <input type="password" value={form.password} onChange={set('password')} placeholder="영문+숫자 8자 이상" style={FIELD} />
             </div>
             <div style={{ flex: 1 }}>
               <label style={LABEL}>비밀번호 확인</label>

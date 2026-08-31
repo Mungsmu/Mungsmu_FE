@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { findUser, setSession, clearSession } from '../lib/auth.js'
+import { login, clearSession } from '../lib/auth.js'
 
 export function MyPage() {
   const nav = useNavigate()
@@ -85,18 +85,20 @@ export function LoginPage() {
   const [userId, setUserId] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  // 아직 실제 백엔드가 없어서, 가입된 계정이면 비밀번호를 검증하고
-  // 가입 이력이 없으면(=임시로 아무거나 입력해본 경우) 그 입력값으로 임시 세션을 만들어 통과시킨다.
-  const submit = () => {
-    if (!userId.trim() || !password) return
-    const user = findUser(userId.trim())
-    if (user && user.password !== password) {
-      setError('비밀번호가 일치하지 않아요.')
-      return
+  const submit = async () => {
+    if (!userId.trim() || !password || loading) return
+    setLoading(true)
+    setError('')
+    try {
+      await login(userId.trim(), password)
+      nav('/home')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
     }
-    setSession(user ?? { userId: userId.trim(), name: userId.trim() })
-    nav('/home')
   }
 
   return (
@@ -121,12 +123,11 @@ export function LoginPage() {
             onKeyDown={e => e.key === 'Enter' && submit()} placeholder="비밀번호를 입력하세요"
             style={{ border:'1.5px solid var(--border-light)', background:'var(--bg-page)', borderRadius:'var(--r-lg)', padding:'14px 16px', fontSize:16, color:'var(--text-body)' }} />
           {error && <p style={{ fontSize:12.5, color:'#A53E33', marginTop:-2 }}>{error}</p>}
-          <button onClick={submit} disabled={!userId.trim() || !password}
-            style={{ background:'var(--primary)', color:'#fff', fontWeight:700, fontSize:16, padding:14, borderRadius:'var(--r-lg)', cursor:'pointer', boxShadow:'var(--shadow-lg)', marginTop:4, opacity: (!userId.trim() || !password) ? 0.4 : 1 }}>
-            로그인
+          <button onClick={submit} disabled={!userId.trim() || !password || loading}
+            style={{ background:'var(--primary)', color:'#fff', fontWeight:700, fontSize:16, padding:14, borderRadius:'var(--r-lg)', cursor:'pointer', boxShadow:'var(--shadow-lg)', marginTop:4, opacity: (!userId.trim() || !password || loading) ? 0.4 : 1 }}>
+            {loading ? '로그인 중...' : '로그인'}
           </button>
         </div>
-        <p style={{ fontSize:11.5, color:'var(--text-muted)', lineHeight:1.6, marginBottom:10 }}>아직 백엔드 연동 전이라, 가입 이력이 없어도 아이디·비밀번호를 입력하면 임시로 이용하실 수 있어요.</p>
         <button onClick={() => nav('/signup')} style={{ fontSize:13, fontWeight:700, color:'var(--primary)', cursor:'pointer' }}>회원가입 하러 가기 →</button>
       </div>
     </div>

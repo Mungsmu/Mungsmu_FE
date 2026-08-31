@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>네비게이션 API 테스트 — 마음숨길</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:Pretendard,-apple-system,'Malgun Gothic',sans-serif; }
+  body { display:flex; height:100vh; overflow:hidden; }
+  #panel { width:360px; flex-shrink:0; background:#fff; border-right:1px solid #E3E0D8; overflow-y:auto; padding:20px; }
+  #map { flex:1; }
+  h1 { font-size:17px; font-weight:800; margin-bottom:4px; }
+  .sub { font-size:12px; color:#8A8577; margin-bottom:16px; }
+  .provider { border:1.5px solid #E3E0D8; border-radius:12px; padding:12px 14px; margin-bottom:10px; cursor:pointer; }
+  .provider.active { border-color:#14807A; background:#F0F9F8; }
+  .provider .name { font-size:14px; font-weight:800; display:flex; align-items:center; gap:8px; }
+  .provider .dot { width:12px; height:12px; border-radius:3px; display:inline-block; }
+  .provider .stat { font-size:12px; color:#5B6C78; margin-top:4px; }
+  .provider .status { font-size:11px; margin-top:4px; font-weight:700; }
+  .ok { color:#2E7D4F; } .err { color:#A53E33; } .loading { color:#8A8577; }
+  #navbanner { background:#14807A; color:#fff; border-radius:12px; padding:14px; margin-bottom:14px; display:none; }
+  #navbanner .next { font-size:11px; opacity:.75; margin-bottom:2px; }
+  #navbanner .inst { font-size:15px; font-weight:800; line-height:1.4; }
+  #steps { list-style:none; }
+  #steps li { padding:9px 0 9px 26px; border-bottom:1px solid #F0EDE5; font-size:12.5px; color:#3D4852; position:relative; line-height:1.45; }
+  #steps li::before { content:''; position:absolute; left:6px; top:14px; width:8px; height:8px; border-radius:50%; background:#C9C4B5; }
+  #steps li b { color:#16242E; }
+  .legend-note { font-size:11px; color:#8A8577; background:#FAF8F2; border-radius:8px; padding:10px 12px; margin:12px 0; line-height:1.6; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <h1>네비게이션 API 테스트</h1>
+  <p class="sub">춘천 (춘천시청 부근) → 속초 (중앙로) · 실도로 경로</p>
+
+  <div id="navbanner">
+    <div class="next">다음 안내</div>
+    <div class="inst" id="navinst">—</div>
+  </div>
+
+  <div id="providers"></div>
+
+  <div class="legend-note">
+    빨간 사각형 = 터널(서울양양고속도로 인제양양터널 구간) 차단 영역.<br>
+    <b>Valhalla 터널회피</b>는 이 영역을 exclude_polygons로 피해서 국도로 우회한 경로입니다.
+  </div>
+
+  <ol id="steps"></ol>
+</div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const START = { lat: 37.8813, lon: 127.7300, name: '춘천' }
+const END   = { lat: 38.2070, lon: 128.5918, name: '속초' }
+// 원 경로(서울양양고속도로) 위 중간점 기준 차단 박스 — 인제양양터널 방면 구간
+const BLOCK_CENTER = { lat: 37.859532, lon: 128.242299 }, D = 0.02
+const BLOCK_POLY = [
+  [BLOCK_CENTER.lon-D, BLOCK_CENTER.lat-D], [BLOCK_CENTER.lon+D, BLOCK_CENTER.lat-D],
+  [BLOCK_CENTER.lon+D, BLOCK_CENTER.lat+D], [BLOCK_CENTER.lon-D, BLOCK_CENTER.lat+D],
+  [BLOCK_CENTER.lon-D, BLOCK_CENTER.lat-D],
+]
+
+const map = L.map('map').setView([38.04, 128.15], 9)
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors', maxZoom: 19,
+}).addTo(map)
+L.marker([START.lat, START.lon]).addTo(map).bindPopup('출발: 춘천')
+L.marker([END.lat, END.lon]).addTo(map).bindPopup('도착: 속초')
+L.rectangle([[BLOCK_CENTER.lat-D, BLOCK_CENTER.lon-D],[BLOCK_CENTER.lat+D, BLOCK_CENTER.lon+D]],
+  { color:'#D45B4E', weight:2, fillOpacity:.15, dashArray:'6 4' }).addTo(map).bindPopup('터널 차단 영역')
+
+// Valhalla polyline6 디코더
+function decodeShape(str){const pts=[];let i=0,lat=0,lon=0;while(i<str.length){let b,sh=0,res=0;do{b=str.charCodeAt(i++)-63;res|=(b&0x1f)<<sh;sh+=5}while(b>=0x20);lat+=(res&1)?~(res>>1):(res>>1);sh=0;res=0;do{b=str.charCodeAt(i++)-63;res|=(b&0x1f)<<sh;sh+=5}while(b>=0x20);lon+=(res&1)?~(res>>1):(res>>1);pts.push([lat/1e6,lon/1e6])}return pts}
+
+const PROVIDERS = [
+  { id:'osrm', name:'OSRM (데모 서버)', color:'#2563EB' },
+  { id:'valhalla', name:'Valhalla (기본)', color:'#7C3AED' },
+  { id:'valhalla-avoid', name:'Valhalla (터널회피)', color:'#14807A' },
+]
+const state = {} // id -> { line, steps, distKm, timeMin, status }
+const providersEl = document.getElementById('providers')
+
+function render() {
+  providersEl.innerHTML = PROVIDERS.map(p => {
+    const s = state[p.id] ?? {}
+    const cls = s.status==='ok' ? 'ok' : s.status==='error' ? 'err' : 'loading'
+    const statusText = s.status==='ok' ? '✓ 브라우저 직접 호출 성공 (CORS 허용)'
+      : s.status==='error' ? '✗ ' + s.message : '불러오는 중...'
+    return `<div class="provider ${s.active?'active':''}" onclick="selectProvider('${p.id}')">
+      <div class="name"><span class="dot" style="background:${p.color}"></span>${p.name}</div>
+      ${s.distKm ? `<div class="stat">${s.distKm.toFixed(1)} km · 약 ${Math.round(s.timeMin)}분 · 경유 도로: ${s.roads ?? ''}</div>` : ''}
+      <div class="status ${cls}">${statusText}</div>
+    </div>`
+  }).join('')
+}
+
+window.selectProvider = (id) => {
+  PROVIDERS.forEach(p => { if (state[p.id]) state[p.id].active = p.id===id })
+  const s = state[id]
+  render()
+  if (!s?.steps) return
+  document.getElementById('steps').innerHTML =
+    s.steps.map(t => `<li>${t}</li>`).join('')
+  const banner = document.getElementById('navbanner')
+  banner.style.display = 'block'
+  document.getElementById('navinst').innerHTML = s.steps[1] ?? s.steps[0] ?? '—'
+  if (s.line) map.fitBounds(s.line.getBounds(), { padding:[30,30] })
+}
+
+function done(id, latlngs, distKm, timeMin, steps, roads) {
+  const p = PROVIDERS.find(p=>p.id===id)
+  const line = L.polyline(latlngs, { color:p.color, weight:5, opacity:.8 }).addTo(map)
+  state[id] = { status:'ok', line, distKm, timeMin, steps, roads }
+  render()
+}
+function fail(id, message) { state[id] = { status:'error', message }; render() }
+
+// 1) OSRM — GET, GeoJSON geometry + steps
+fetch(`https://router.project-osrm.org/route/v1/driving/${START.lon},${START.lat};${END.lon},${END.lat}?overview=full&geometries=geojson&steps=true`)
+  .then(r=>r.json()).then(d=>{
+    const r=d.routes[0]
+    const steps=r.legs[0].steps.map(s=>{
+      const t={turn:'회전',['new name']:'직진(도로명 변경)',depart:'출발',arrive:'도착',merge:'합류',['on ramp']:'진입로',['off ramp']:'출구',fork:'분기',['end of road']:'막다른길',continue:'직진'}[s.maneuver.type]??s.maneuver.type
+      return `<b>${t}${s.maneuver.modifier?` (${s.maneuver.modifier})`:''}</b> ${s.name||''} · ${(s.distance/1000).toFixed(1)}km`
+    })
+    done('osrm', r.geometry.coordinates.map(c=>[c[1],c[0]]), r.distance/1000, r.duration/60, steps,
+      [...new Set(r.legs[0].steps.map(s=>s.name).filter(Boolean))].slice(0,4).join(', '))
+  }).catch(e=>fail('osrm', 'CORS 또는 네트워크 오류: '+e.message))
+
+// 2) Valhalla 기본 / 3) 터널회피 — POST JSON
+function valhalla(id, extra) {
+  fetch('https://valhalla1.openstreetmap.de/route', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ locations:[{lat:START.lat,lon:START.lon},{lat:END.lat,lon:END.lon}],
+      costing:'auto', directions_options:{units:'kilometers'}, ...extra }),
+  }).then(r=>r.json()).then(d=>{
+    if (d.error) { fail(id, d.error); return }
+    const leg=d.trip.legs[0]
+    const steps=leg.maneuvers.map(m=>`<b>${(m.street_names??[]).join('/')||'—'}</b> ${m.instruction} · ${m.length.toFixed(1)}km`)
+    done(id, decodeShape(leg.shape), d.trip.summary.length, d.trip.summary.time/60, steps,
+      [...new Set(leg.maneuvers.flatMap(m=>m.street_names??[]))].slice(0,4).join(', '))
+  }).catch(e=>fail(id, 'CORS 또는 네트워크 오류: '+e.message))
+}
+valhalla('valhalla', {})
+valhalla('valhalla-avoid', { exclude_polygons:[BLOCK_POLY] })
+
+render()
+</script>
+</body>
+</html>

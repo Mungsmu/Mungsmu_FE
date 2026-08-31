@@ -7,3 +7,8 @@ dist/
 .env
 .env.local
 .env.*.local
+.gstack/
+.scratch/
+
+# 디자인 참고 이미지(외부 앱 캡처) — 저장소에 올리지 않음
+참고용/
