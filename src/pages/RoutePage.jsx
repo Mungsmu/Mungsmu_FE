@@ -8,6 +8,9 @@ import { fetchRoute, traceTunnels } from '../lib/route.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const RECENT = ['속초 해수욕장', '양양 낙산사', '강릉 경포해변']
+// 서울양양고속도로처럼 500m 이상 터널이 실제로 수십 개인 구간도 있어, 지도 마커·목록은
+// 상위 N개만 보여주고 나머지는 "외 N개"로 요약한다 (전체 개수는 route.tunnelCount로 별도 표시)
+const TUNNEL_PREVIEW_MAX = 3
 
 // 카카오 키가 없거나 지오코딩이 실패했을 때만 쓰는 목업 결과값 (기존 데모 그대로 유지)
 const MOCK_RESULT = {
@@ -248,7 +251,7 @@ export default function RoutePage() {
             </div>
             {result.shortest.tunnels.length > 0 && (
               <div style={{ display:'flex', gap:4, marginTop:11, flexWrap:'wrap' }}>
-                {result.shortest.tunnels.slice(0, 3).map(t => (
+                {result.shortest.tunnels.slice(0, TUNNEL_PREVIEW_MAX).map(t => (
                   <span key={t.id} style={{ fontSize:9, color:'#A53E33', background:'#FBEAE7', borderRadius:5, padding:'4px 6px' }}>{t.name}</span>
                 ))}
               </div>
@@ -273,7 +276,7 @@ export default function RoutePage() {
             routeProfile={selectedRoute}
             markers={[
               { id:'o', label:'출발', query: origin, color:'#14807A' },
-              ...(selectedRoute === 'shortest' ? tunnels.map(t => ({ id:t.id, label:t.name, query:t.name, color:'#A53E33' })) : []),
+              ...(selectedRoute === 'shortest' ? tunnels.slice(0, TUNNEL_PREVIEW_MAX).map(t => ({ id:t.id, label:t.name, query:t.name, color:'#A53E33' })) : []),
               { id:'d', label:'도착', query: dest, color:'#D45B4E' },
             ]}
           >
@@ -330,12 +333,17 @@ export default function RoutePage() {
           {selectedRoute === 'shortest' && tunnels.length > 0 && (
             <>
               <p style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'#8A98A2', letterSpacing:'0.05em', margin:'15px 0 9px' }}>지나는 터널</p>
-              {tunnels.map(t => (
+              {tunnels.slice(0, TUNNEL_PREVIEW_MAX).map(t => (
                 <div key={t.id} style={{ display:'flex', alignItems:'center', gap:9, fontSize:11.5, color:'#5B6C78', marginBottom:6 }}>
                   <span style={{ width:6, height:6, borderRadius:'50%', background:'#D45B4E', flexShrink:0 }} />
                   {t.name}{t.diff ? ` · 난이도 ${t.diff}단계` : t.lengthM ? ` · ${(t.lengthM / 1000).toFixed(1)}km` : ''}
                 </div>
               ))}
+              {tunnels.length > TUNNEL_PREVIEW_MAX && (
+                <div style={{ fontSize:11.5, color:'#8A98A2', fontWeight:600, marginBottom:6 }}>
+                  외 {tunnels.length - TUNNEL_PREVIEW_MAX}개
+                </div>
+              )}
             </>
           )}
 

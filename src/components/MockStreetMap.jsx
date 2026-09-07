@@ -29,7 +29,9 @@ const SEOUL = { lat: 37.5665, lng: 126.9780 }
 // navGuide: { progressIdx, turnIdx, turnType } — 주행 진행 인덱스와 다음 회전 지점.
 //   지정되면 지나온 길은 옅게, 남은 길은 선명하게 나뉘고, 회전 지점에 방향 배지와
 //   진출 구간(주황 강조선 + 화살촉)이 그려져 어느 길로 빠지는지 지도에서 바로 보인다.
-export default function MockStreetMap({ children, markers, showPath = false, routeProfile, onRoute, navPosition, routeStyle, navGuide }) {
+// path: [[lat,lng],...] — 호출부가 이미 계산해 둔 좌표 배열. 지정되면 내부에서 fetchRoute를
+//   다시 호출하지 않고 이 경로를 그대로 그린다(예: 터널 구간만 잘라낸 경로).
+export default function MockStreetMap({ children, markers, showPath = false, routeProfile, onRoute, navPosition, routeStyle, navGuide, myLocation = false, path }) {
   const [coords, setCoords] = useState(null)
   const [geoError, setGeoError] = useState(false)
   const [kakaoError, setKakaoError] = useState(false)
@@ -41,7 +43,7 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
   const onRouteRef = useRef(onRoute)
   onRouteRef.current = onRoute
   const navigatingRef = useRef(false)
-  const markerQuery = markers?.map(m => m.query).join('|') ?? ''
+  const markerQuery = markers?.map(m => m.query ?? `${m.lat},${m.lng}`).join('|') ?? ''
 
   useEffect(() => {
     if (!navigator.geolocation) { setGeoError(true); return }
@@ -60,34 +62,59 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
       if (cancelled) return
       const center = new kakao.maps.LatLng(SEOUL.lat, SEOUL.lng)
       const map = new kakao.maps.Map(containerRef.current, { center, level: 5 })
-      const posMarker = new kakao.maps.Marker({ position: center, map })
-      mapObjRef.current = { kakao, map, posMarker, placeMarkers: [], polyline: null }
+      mapObjRef.current = { kakao, map, placeMarkers: [], polyline: null }
       setKakaoReady(true)
     }).catch(() => { if (!cancelled) setKakaoError(true) })
     return () => { cancelled = true }
   }, [])
 
-  // 실제 GPS 좌표를 받으면 현재 위치 마커를 이동 (경로 마커가 없을 때만 지도 중심도 이동)
-  // 단, 내비 주행 중(navPosition 제어)에는 GPS 좌표가 마커를 뺏어가지 않게 한다.
+  // 실제 GPS 좌표를 받으면 지도 중심을 옮긴다 (경로 마커가 없을 때만).
+  // 단, 내비 주행 중(navPosition 제어)에는 GPS 좌표가 지도 중심을 뺏어가지 않게 한다.
   useEffect(() => {
-    const { kakao, map, posMarker } = mapObjRef.current
+    const { kakao, map } = mapObjRef.current
     if (!coords || !kakao || !map || navigatingRef.current) return
     const pos = new kakao.maps.LatLng(coords.lat, coords.lng)
-    posMarker.setPosition(pos)
     if (!markers?.length) map.setCenter(pos)
   }, [coords, markerQuery])
+
+  // 현재 위치 하이라이트 — myLocation prop을 켠 화면(홈 화면)에서만 빨간 레이저 포인트로 표시.
+  // 길찾기·경로 상세 등 나머지 화면에서는 그리지 않는다.
+  useEffect(() => {
+    const { kakao, map } = mapObjRef.current
+    if (!kakao || !map) return
+    if (!myLocation || !coords) {
+      mapObjRef.current.myLocOverlay?.setMap(null)
+      mapObjRef.current.myLocOverlay = null
+      return
+    }
+    const pos = new kakao.maps.LatLng(coords.lat, coords.lng)
+    if (!mapObjRef.current.myLocOverlay) {
+      const el = document.createElement('div')
+      el.style.cssText = 'position:relative;width:18px;height:18px'
+      el.innerHTML = `
+        <span style="position:absolute;inset:-16px;border-radius:50%;background:rgba(212,91,78,.3);animation:ripple 1.8s ease-out infinite"></span>
+        <span style="position:absolute;inset:-16px;border-radius:50%;background:rgba(212,91,78,.3);animation:ripple 1.8s ease-out infinite;animation-delay:.9s"></span>
+        <span style="position:absolute;inset:0;border-radius:50%;background:#D45B4E;border:3px solid #fff;box-shadow:0 2px 8px rgba(20,40,60,.35)"></span>
+      `
+      const overlay = new kakao.maps.CustomOverlay({ position: pos, content: el, zIndex: 4 })
+      overlay.setMap(map)
+      mapObjRef.current.myLocOverlay = overlay
+    } else {
+      mapObjRef.current.myLocOverlay.setPosition(pos)
+    }
+  }, [coords, myLocation])
 
   // 주행 중 현재 위치 — 실제 내비처럼 진행 방향을 가리키는 화살표 마커가 경로를 따라 움직이고,
   // 지도가 부드럽게 따라가며 회전 지점에 가까워지면 자동으로 확대된다.
   useEffect(() => {
-    const { kakao, map, posMarker } = mapObjRef.current
+    const { kakao, map } = mapObjRef.current
     if (!navPosition || !kakao || !map) return
     const first = !navigatingRef.current
     navigatingRef.current = true
     const pos = new kakao.maps.LatLng(navPosition.lat, navPosition.lng)
 
     if (first) {
-      posMarker.setMap(null) // 기본 핀 대신 헤딩 화살표 오버레이 사용
+      mapObjRef.current.myLocOverlay?.setMap(null) // 내비 시작 시 홈 화면용 위치 하이라이트 정리(있었다면)
       const el = document.createElement('div')
       el.style.cssText = 'width:46px;height:46px;border-radius:50%;background:#fff;box-shadow:0 4px 16px rgba(15,50,90,.45);display:flex;align-items:center;justify-content:center;border:2.5px solid #1A6DE3'
       el.innerHTML = '<svg width="28" height="28" viewBox="0 0 24 24" style="transition:transform .45s ease"><path d="M12 2.5 L18.5 19.5 L12 15.8 L5.5 19.5 Z" fill="#1A6DE3"/></svg>'
@@ -110,20 +137,23 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
     map.panTo(new kakao.maps.LatLng(cLat, cLng))
   }, [navPosition])
 
-  // markers prop(장소명)을 실제 좌표로 검색
+  // markers prop을 실제 좌표로: lat/lng가 이미 있으면 그대로 쓰고, 장소명(query)만 있으면 검색해서 좌표를 붙인다
   useEffect(() => {
     const { kakao } = mapObjRef.current
     if (!kakao || !markers?.length) { setResolvedMarkers([]); return }
     let cancelled = false
     Promise.all(markers.map(async m => {
+      if (m.lat != null && m.lng != null) return m
       const place = await resolvePlace(kakao, m.query)
       return place ? { ...m, ...place } : null
     })).then(list => { if (!cancelled) setResolvedMarkers(list.filter(Boolean)) })
     return () => { cancelled = true }
   }, [kakaoReady, markerQuery])
 
-  // 실도로 경로 계산 (routeProfile이 지정된 경우에만) — 도착 전까지는 직선 폴리라인이 먼저 보인다
+  // 실도로 경로 계산 (routeProfile이 지정된 경우에만) — 도착 전까지는 직선 폴리라인이 먼저 보인다.
+  // path prop이 주어지면(호출부가 이미 좌표 배열을 갖고 있는 경우) 직접 계산하지 않고 그대로 쓴다.
   useEffect(() => {
+    if (path) { setRoutePath(path); onRouteRef.current?.({ path }); return }
     setRoutePath(null)
     if (!showPath || !routeProfile || resolvedMarkers.length < 2) return
     let cancelled = false
@@ -135,7 +165,7 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
         onRouteRef.current?.(route)
       })
     return () => { cancelled = true }
-  }, [resolvedMarkers, showPath, routeProfile])
+  }, [resolvedMarkers, showPath, routeProfile, path])
 
   // 주행 안내 강조 — 지나온 길/남은 길 구분 + 회전 지점 배지 + 진출 구간 강조선
   useEffect(() => {
@@ -265,11 +295,14 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
         ))}
       </svg>
 
-      {/* 현재 위치 마커 */}
-      <div style={{ position: 'absolute', left: '50%', top: '52%', transform: 'translate(-50%,-50%)' }}>
-        <span style={{ position: 'absolute', inset: -14, borderRadius: '50%', background: 'rgba(20,128,122,.28)', animation: 'pulse 1.8s ease-in-out infinite' }} />
-        <span style={{ position: 'relative', display: 'block', width: 18, height: 18, borderRadius: '50%', background: '#14807A', border: '3px solid #fff', boxShadow: '0 2px 8px rgba(20,40,60,.35)' }} />
-      </div>
+      {/* 현재 위치 하이라이트 — 홈 화면(myLocation)에서만 빨간 레이저 포인트로 표시 */}
+      {myLocation && (
+        <div style={{ position: 'absolute', left: '50%', top: '52%', transform: 'translate(-50%,-50%)' }}>
+          <span style={{ position: 'absolute', inset: -16, borderRadius: '50%', background: 'rgba(212,91,78,.3)', animation: 'ripple 1.8s ease-out infinite' }} />
+          <span style={{ position: 'absolute', inset: -16, borderRadius: '50%', background: 'rgba(212,91,78,.3)', animation: 'ripple 1.8s ease-out infinite', animationDelay: '.9s' }} />
+          <span style={{ position: 'relative', display: 'block', width: 18, height: 18, borderRadius: '50%', background: '#D45B4E', border: '3px solid #fff', boxShadow: '0 2px 8px rgba(20,40,60,.35)' }} />
+        </div>
+      )}
 
       {/* GPS 좌표 뱃지 */}
       <div style={{ position: 'absolute', left: 14, bottom: 14, background: 'rgba(255,255,255,.92)', borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#5B6C78', fontWeight: 600, boxShadow: '0 1px 4px rgba(20,40,60,.1)' }}>

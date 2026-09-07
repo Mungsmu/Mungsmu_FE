@@ -32,7 +32,7 @@ export default function HomePage() {
 
   return (
     <div style={{ height: '100%' }}>
-      <MockStreetMap>
+      <MockStreetMap myLocation>
         {/* 좌상단 플로팅 패널: 목적지 입력 + (열림 시) 안심 코스 목록 */}
         <div style={{ position: 'absolute', top: 16, left: 16, width: 340, maxWidth: 'calc(100vw - 32px)', background: '#fff', borderRadius: 18, boxShadow: '0 12px 30px rgba(20,40,60,.16)', pointerEvents: 'auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '15px 16px' }}>

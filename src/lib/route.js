@@ -116,7 +116,8 @@ export async function fetchRoute(points, { avoidHighways = false, excludeTunnels
 /**
  * 경로가 실제로 지나는 터널 구간 목록 (Valhalla trace_attributes — OSM 터널 태그 기반).
  * @param shapes fetchRoute 결과의 shapes (leg별 인코딩 좌표)
- * @returns [{ names: string[], lengthM }] 인접 터널 엣지를 구간으로 병합한 목록. 실패 시 null.
+ * @returns [{ names: string[], lengthM, begin, end }] 인접 터널 엣지를 구간으로 병합한 목록. 실패 시 null.
+ *   begin/end는 해당 leg의 shape 인덱스 — 경유지 없는 단일 leg 경로에서는 fetchRoute() 결과의 path 인덱스와 그대로 일치한다.
  */
 export async function traceTunnels(shapes) {
   if (!shapes?.length) return null
@@ -148,7 +149,7 @@ export async function traceTunnels(shapes) {
       }
       segs.push(...legSegs)
     }
-    return segs.map(s => ({ names: [...s.names], lengthM: Math.round(s.lengthM) }))
+    return segs.map(s => ({ names: [...s.names], lengthM: Math.round(s.lengthM), begin: s.begin, end: s.end }))
   } catch {
     return null
   }

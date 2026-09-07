@@ -4,7 +4,8 @@ import { TUNNELS } from '../data/mock.js'
 import MockStreetMap from '../components/MockStreetMap.jsx'
 import TunnelBanner from '../components/TunnelBanner.jsx'
 import TunnelGauge from '../components/TunnelGauge.jsx'
-import { loadKakaoMaps, haversineM } from '../lib/kakaoMap.js'
+import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
+import { cumulativeDistM, fetchRoute, traceTunnels } from '../lib/route.js'
 import { speak } from '../lib/speech.js'
 import { recordTunnelPass } from '../lib/tunnelStats.js'
 
@@ -12,7 +13,13 @@ const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const DEFAULT_TUNNEL = TUNNELS.find(t => t.name === '미시령터널')
 const BREATH_MS = 5000
 const EXIT_WARN_M = 10
+const DEMO_TICK_MS = 250     // 데모 진행 타이머 간격 — 1초 단위는 카메라가 뚝뚝 끊겨 보여서 촘촘하게
+const DEMO_DURATION_MS = 24000 // 데모 모드에서 터널 하나를 통과하는 데 걸리는 총 시간(길이 무관, 고정)
 const APPROACH_MS = 5000 // 10m 전 팝업을 보여주는 시간 — 이 동안은 아직 호흡 가이드가 시작되지 않는다
+// 주행 카메라가 움직일 경로: 터널 이름을 지오코딩한 지점 전후로 여러 각도를 시도해 실도로 경로를 구하고,
+// traceTunnels()로 그 경로가 실제 이 터널을 지나는지 검증한다 (도로 진행 방향을 모르므로 각도를 바꿔가며 시도).
+// 지오코딩·검증에 실패하면(카카오 키 없음 등) 주행 카메라 없이 기본 지도만 보여준다.
+const TUNNEL_PASS_BEARINGS = [0, 45, 90, 135]
 
 export default function CompanionPage() {
   const nav = useNavigate()
@@ -30,11 +37,56 @@ export default function CompanionPage() {
   const [breathFrac, setBreathFrac] = useState(0) // 현재 호흡 구간 내 진행률 0~1 (테두리를 5초에 걸쳐 매끄럽게 채움)
   const [guardianState, setGuardianState] = useState('idle') // 'idle' | 'calling' | 'sent'
   const [exitWarned, setExitWarned] = useState(false)
+  const [navPos, setNavPos] = useState(null) // { lat, lng, heading, zoom } — 경로 위 주행 카메라 위치
+  const [tunnelPath, setTunnelPath] = useState(null) // [[lat,lng],...] 검증된 실제 터널 구간. 없으면 주행 카메라 미표시
 
   const enterTimeRef = useRef(null)
   const phaseStartRef = useRef(Date.now())
   const exitWarnedRef = useRef(false)
+  const demoRouteRef = useRef(null) // { path, cum, totalM } — 주행 카메라가 따라갈 경로
   const completedRef = useRef(false)
+
+  // 0) 터널 이름을 지오코딩한 지점 전후로 몇 가지 각도를 시도해 실도로 경로를 계산하고,
+  // traceTunnels()로 그 경로가 실제 이 터널(비슷한 길이의 터널 구간)을 지나는지 검증한다.
+  // 검증에 성공하면 경로 전체가 아니라 실제 터널 edge의 시작~끝 구간(+약간의 여유)만 잘라서
+  // 쓴다 — 앵커점이 도로에서 멀리 떨어져 있으면 경로 전체가 수십 km짜리 우회로가 될 수 있어서,
+  // 우회 구간 없이 터널 자체를 주행 카메라 배경으로 쓰기 위함.
+  // 실패하면(지오코딩 불가·일치하는 터널 없음 등) tunnelPath를 null로 두어 주행 카메라를 표시하지 않는다.
+  useEffect(() => {
+    let cancelled = false
+    setTunnelPath(null)
+    if (!KAKAO_KEY) return
+    ;(async () => {
+      try {
+        const kakao = await loadKakaoMaps(KAKAO_KEY)
+        const center = await resolvePlace(kakao, tunnel.name)
+        if (cancelled || !center) return
+        const lengthM = tunnel.lengthM || 2000
+        const halfM = Math.max(300, lengthM / 2) + 250 // 터널 전후로 진입부까지 포함하는 여유
+        for (const bearing of TUNNEL_PASS_BEARINGS) {
+          if (cancelled) return
+          const rad = (bearing * Math.PI) / 180
+          const dLat = (halfM * Math.cos(rad)) / 111320
+          const dLng = (halfM * Math.sin(rad)) / (111320 * Math.cos((center.lat * Math.PI) / 180))
+          const a = { lat: center.lat - dLat, lng: center.lng - dLng }
+          const b = { lat: center.lat + dLat, lng: center.lng + dLng }
+          const route = await fetchRoute([a, b])
+          if (!route) continue
+          const traced = await traceTunnels(route.shapes)
+          const seg = traced?.find(s => s.lengthM >= lengthM * 0.5 && s.begin != null && s.end != null)
+          if (seg) {
+            const BUFFER_PTS = 6 // 터널 진입/진출 직전 도로가 살짝 보이도록 앞뒤로 여유를 둔다
+            const startIdx = Math.max(0, seg.begin - BUFFER_PTS)
+            const endIdx = Math.min(route.path.length - 1, seg.end + BUFFER_PTS)
+            const trimmed = route.path.slice(startIdx, endIdx + 1)
+            if (trimmed.length >= 2 && !cancelled) setTunnelPath(trimmed)
+            return
+          }
+        }
+      } catch { /* 실패 시 폴백 경로 유지 */ }
+    })()
+    return () => { cancelled = true }
+  }, [tunnel])
 
   // 1) 접근 단계: 10m 전 팝업 + 음성. 아직 호흡 가이드는 시작하지 않는다.
   // (개발 모드 StrictMode는 effect를 두 번 실행하는데, cleanup에서 speech를 취소해 두지 않으면
@@ -131,9 +183,9 @@ export default function CompanionPage() {
     const startMock = () => {
       if (usingGps || mockTimer) return
       mockTimer = setInterval(() => {
-        traveled += lengthM / 24
+        traveled += lengthM * (DEMO_TICK_MS / DEMO_DURATION_MS)
         applyProgress(traveled)
-      }, 1000)
+      }, DEMO_TICK_MS)
     }
     const stopMock = () => { if (mockTimer) { clearInterval(mockTimer); mockTimer = null } }
 
@@ -172,6 +224,36 @@ export default function CompanionPage() {
     }
   }, [phase, tunnel])
 
+  // 주행 카메라가 따라갈 경로(실제 터널 구간 또는 폴백)를 받아오면 누적거리 테이블을 준비한다.
+  const handleDemoRoute = (route) => {
+    const cum = cumulativeDistM(route.path)
+    demoRouteRef.current = { ...route, cum, totalM: cum[cum.length - 1] }
+  }
+
+  // 터널 통과 진행률(pct, 0~100)을 데모 경로 위 위치로 매핑해 주행 카메라를 움직인다.
+  // 짧은 터널은 경로 좌표점 간격이 넓어서(도로가 곧으면 Valhalla가 점을 듬성듬성 찍음) 점에
+  // 그대로 스냅하면 카메라가 멈췄다 점프하는 것처럼 보인다 — 두 점 사이를 거리 비율로 보간해서
+  // 항상 부드럽게 이어지는 위치를 계산한다.
+  useEffect(() => {
+    const r = demoRouteRef.current
+    if (!r || !r.totalM) return
+    const traveledM = (pct / 100) * r.totalM
+    let lo = 0, hi = r.cum.length - 1
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (r.cum[mid] < traveledM) lo = mid + 1; else hi = mid }
+    const idx = lo
+    const prevIdx = Math.max(0, idx - 1)
+    const segLenM = r.cum[idx] - r.cum[prevIdx]
+    const t = segLenM > 0 ? Math.min(1, Math.max(0, (traveledM - r.cum[prevIdx]) / segLenM)) : 1
+    const [la0, ln0] = r.path[prevIdx]
+    const [la1, ln1] = r.path[Math.min(idx, r.path.length - 1)]
+    const lat = la0 + (la1 - la0) * t
+    const lng = ln0 + (ln1 - ln0) * t
+    const j = Math.min(idx + 3, r.path.length - 1)
+    const toRad = d => (d * Math.PI) / 180
+    const heading = (Math.atan2((r.path[j][1] - lng) * Math.cos(toRad(lat)), r.path[j][0] - lat) * 180 / Math.PI + 360) % 360
+    setNavPos({ lat, lng, heading, zoom: 4 })
+  }, [pct])
+
   const callGuardian = () => {
     if (guardianState === 'calling') return
     setGuardianState('calling')
@@ -186,6 +268,12 @@ export default function CompanionPage() {
   const breathing = phase === 'breathing'
   const borderColor = breathPhase === 'exhale' ? '212,91,78' : '46,158,107' // 내쉬기=빨강, 들이마시기=초록
   const thickness = Math.round(breathFrac * 30)
+  const demoMarkers = tunnelPath
+    ? [
+        { id:'o', label:'진입', lat: tunnelPath[0][0], lng: tunnelPath[0][1], color:'#8A98A2' },
+        { id:'d', label:'진출', lat: tunnelPath[tunnelPath.length - 1][0], lng: tunnelPath[tunnelPath.length - 1][1], color:'#D45B4E' },
+      ]
+    : []
 
   return (
     <div style={{ position:'fixed', inset:0, zIndex:60, fontFamily:'Pretendard, sans-serif' }}>
@@ -198,7 +286,14 @@ export default function CompanionPage() {
         }} />
       )}
 
-      <MockStreetMap markers={[{ id:tunnel.id, label:tunnel.name, query:tunnel.name, color:'#D45B4E' }]}>
+      <MockStreetMap
+        showPath
+        path={tunnelPath ?? undefined}
+        onRoute={handleDemoRoute}
+        navPosition={phase !== 'done' ? navPos : null}
+        routeStyle={{ color:'#1A6DE3', weight:8 }}
+        markers={demoMarkers}
+      >
         {/* 상단 상태 · 나가기 */}
         <div style={{ position:'absolute', top:16, left:16, right:16, display:'flex', alignItems:'center', gap:10, zIndex:1, pointerEvents:'auto' }}>
           <div style={{ display:'flex', alignItems:'center', gap:8, background:'rgba(255,255,255,.9)', borderRadius:99, padding:'7px 14px' }}>
