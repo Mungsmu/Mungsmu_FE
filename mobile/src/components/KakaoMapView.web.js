@@ -1,15 +1,13 @@
 import { useRef, useCallback, useEffect } from 'react'
 import { StyleSheet } from 'react-native'
-import { WebView } from 'react-native-webview'
 
 const JS_KEY = process.env.EXPO_PUBLIC_KAKAO_JS_KEY
 
-// 실제 카카오맵을 그리는 HTML — WebView 안에서 로드된다.
-// 카카오맵 JS SDK는 브라우저 전용이라 RN에서 직접 못 쓰기 때문에 WebView로 감싸는 표준적인 방법을 쓴다.
-// baseUrl을 카카오 콘솔에 등록된 도메인으로 정확히 맞춰줘야 SDK·키워드 검색 요청이 도메인 검증을 통과한다.
-// (직접 확인함: 이 JS 키는 http://localhost:5173 이 등록돼 있어서 그 값이어야 통과하고,
-//  포트가 다르거나 그냥 http://localhost 만 쓰면 지도는 뜨지만 키워드 검색이 막힌다.)
-// libraries=services를 넣어야 장소 이름(query)을 좌표로 바꾸는 키워드 검색을 쓸 수 있다.
+// 웹 프리뷰(expo start --web) 전용. react-native-webview는 web 플랫폼을 지원하지 않으므로
+// 여기서는 WebView 대신 진짜 브라우저 iframe(srcDoc)을 써서 카카오맵을 띄운다.
+// sandbox 속성을 주지 않은 srcDoc iframe은 부모 문서와 origin이 같아서, 카카오 SDK가 확인하는
+// Referer가 실제 개발 서버 주소(예: http://localhost:8081)가 된다 — 그 주소를 카카오 콘솔
+// "내 애플리케이션 > 플랫폼 > Web"에 등록해둬야 지도가 뜬다.
 const HTML = `
 <!DOCTYPE html>
 <html>
@@ -25,7 +23,7 @@ const HTML = `
   <script>
     var map, myLocOverlay, places, placeMarkers = [], pathLine;
     var navOverlay, navArrowEl, navigating = false;
-    function post(msg) { window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(msg)); }
+    function post(msg) { window.parent.postMessage(JSON.stringify(msg), '*'); }
 
     // 홈 화면의 "현재 위치" 표시 — 웹(MockStreetMap.jsx의 myLocation)과 같은 빨간 리플 오버레이.
     window.setCenter = function(lat, lng, withMarker) {
@@ -74,7 +72,6 @@ const HTML = `
       navOverlay.setPosition(pos);
       if (np.heading != null && navArrowEl) navArrowEl.style.transform = 'rotate(' + np.heading + 'deg)';
       if (np.zoom && map.getLevel() !== np.zoom) map.setLevel(np.zoom, { animate: true });
-      // 실제 내비처럼 차량이 화면 하단에 오도록, 지도 중심을 진행 방향 앞쪽으로 당긴다
       var AHEAD_M = { 3: 130, 4: 260, 5: 520, 7: 1500 };
       var aheadM = AHEAD_M[np.zoom] || 260;
       var rad = ((np.heading || 0) * Math.PI) / 180;
@@ -165,8 +162,9 @@ const HTML = `
           });
           places = new kakao.maps.services.Places();
 
-          // WebView 컨테이너 크기가 회전·키보드 등으로 바뀌면 지도 캔버스가 이전 크기에
-          // 잘린 채로 남을 수 있어서, 크기 변화가 감지되면 relayout()으로 다시 맞춰준다.
+          // iframe이 React 레이아웃(flex)이 자리잡기 전에 삽입되면 #map이 실제보다 작은 크기로
+          // 잡힌 채로 지도 캔버스가 만들어져서, 나중에 컨테이너가 커져도 지도가 그 작은 크기에
+          // 잘린 채로 남는다. 컨테이너 크기가 바뀔 때마다 relayout()으로 다시 맞춰준다.
           var lastW = mapEl.clientWidth, lastH = mapEl.clientHeight;
           var ro = new ResizeObserver(function() {
             if (mapEl.clientWidth === lastW && mapEl.clientHeight === lastH) return;
@@ -192,42 +190,47 @@ const HTML = `
 `
 
 export default function KakaoMapView({ lat, lng, hasFix, markers, showPath, path, navPosition, onReady, onError }) {
-  const webRef = useRef(null)
+  const iframeRef = useRef(null)
   const readyRef = useRef(false)
 
   const sendMarkers = useCallback(() => {
     if (markers?.length) {
-      webRef.current?.injectJavaScript(`window.setMarkers(${JSON.stringify(JSON.stringify({ markers, showPath: !!showPath, path }))}); true;`)
+      iframeRef.current?.contentWindow?.setMarkers(JSON.stringify({ markers, showPath: !!showPath, path }))
     }
   }, [markers, showPath, path])
 
   useEffect(() => {
-    if (!readyRef.current) return
-    const arg = navPosition ? JSON.stringify(JSON.stringify(navPosition)) : 'null'
-    webRef.current?.injectJavaScript(`window.setNavPosition(${arg}); true;`)
+    if (readyRef.current) {
+      iframeRef.current?.contentWindow?.setNavPosition(navPosition ? JSON.stringify(navPosition) : null)
+    }
   }, [navPosition])
 
-  const handleMessage = useCallback(e => {
-    try {
-      const msg = JSON.parse(e.nativeEvent.data)
-      if (msg.type === 'ready') {
-        readyRef.current = true
-        onReady?.()
-        if (markers?.length) {
-          sendMarkers()
-        } else if (lat != null && lng != null) {
-          webRef.current?.injectJavaScript(`window.setCenter(${lat}, ${lng}, ${hasFix}); true;`)
+  useEffect(() => {
+    const handleMessage = e => {
+      if (e.source !== iframeRef.current?.contentWindow) return
+      try {
+        const msg = JSON.parse(e.data)
+        if (msg.type === 'ready') {
+          readyRef.current = true
+          onReady?.()
+          if (markers?.length) {
+            sendMarkers()
+          } else if (lat != null && lng != null) {
+            iframeRef.current?.contentWindow?.setCenter(lat, lng, hasFix)
+          }
+        } else if (msg.type === 'error') {
+          onError?.(msg.message)
         }
-      } else if (msg.type === 'error') {
-        onError?.(msg.message)
-      }
-    } catch { /* ignore */ }
+      } catch { /* ignore */ }
+    }
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
   }, [lat, lng, hasFix, markers, onReady, onError, sendMarkers])
 
   // GPS 좌표가 지도 준비 이후에 뒤늦게 들어오는 경우에도 중심을 갱신한다 (마커가 없을 때만).
   useEffect(() => {
     if (readyRef.current && !markers?.length && lat != null && lng != null) {
-      webRef.current?.injectJavaScript(`window.setCenter(${lat}, ${lng}, ${hasFix}); true;`)
+      iframeRef.current?.contentWindow?.setCenter(lat, lng, hasFix)
     }
   }, [lat, lng, hasFix, markers])
 
@@ -236,16 +239,12 @@ export default function KakaoMapView({ lat, lng, hasFix, markers, showPath, path
   }, [sendMarkers])
 
   return (
-    <WebView
-      ref={webRef}
-      originWhitelist={['*']}
-      source={{ html: HTML, baseUrl: 'http://localhost:5173' }}
-      onMessage={handleMessage}
-      onError={() => onError?.('webview-error')}
-      style={StyleSheet.absoluteFill}
-      scrollEnabled={false}
-      javaScriptEnabled
-      domStorageEnabled
+    <iframe
+      ref={iframeRef}
+      title="kakao-map"
+      srcDoc={HTML}
+      onError={() => onError?.('iframe-error')}
+      style={{ ...StyleSheet.absoluteFillObject, width: '100%', height: '100%', border: 0 }}
     />
   )
 }

@@ -4,6 +4,10 @@ import MockMap from '../components/MockMap'
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
 import { MOCK_RESULT, DEFAULT_TUNNEL } from '../data/routeMock'
 
+// 서울양양고속도로처럼 500m 이상 터널이 실제로 수십 개인 구간도 있어, 지도 마커는
+// 상위 N개만 보여주고 나머지는 총 개수(result.tunnelCount)로만 표시한다.
+const TUNNEL_PREVIEW_MAX = 3
+
 export default function RouteDetailScreen() {
   const nav = useNavigation()
   const { origin, dest, selectedRoute, result: fullResult = MOCK_RESULT } = useRoute().params
@@ -14,6 +18,8 @@ export default function RouteDetailScreen() {
   const start = () => nav.navigate('Navigating', {
     origin, dest, durationMin: result.durationMin, distanceKm: result.distanceKm,
     waypoints: isAvoid ? fullResult.avoid.waypoints : [],
+    path: result.path, maneuvers: result.maneuvers,
+    originPlace: result.origin, destPlace: result.dest,
     ...(isAvoid ? {} : { tunnels }),
   })
 
@@ -24,10 +30,11 @@ export default function RouteDetailScreen() {
       <View style={styles.mapBox}>
         <MockMap
           showPath
+          path={result.path}
           markers={[
-            { id: 'o', label: '출발', query: origin, color: COLORS.primary },
-            ...(isAvoid ? [] : tunnels.map(t => ({ id: t.id, label: t.name, query: t.name, color: '#A53E33' }))),
-            { id: 'd', label: '도착', query: dest, color: COLORS.gradeRed },
+            { id: 'o', label: '출발', query: origin, color: COLORS.primary, lat: result.origin?.lat, lng: result.origin?.lng },
+            ...(isAvoid ? [] : tunnels.slice(0, TUNNEL_PREVIEW_MAX).map(t => ({ id: t.id, label: t.name, query: t.name, color: '#A53E33', lat: t.lat, lng: t.lng }))),
+            { id: 'd', label: '도착', query: dest, color: COLORS.gradeRed, lat: result.dest?.lat, lng: result.dest?.lng },
           ]}
         >
           <View style={styles.mapLabel}>

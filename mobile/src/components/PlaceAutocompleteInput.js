@@ -47,7 +47,9 @@ export default function PlaceAutocompleteInput({ value, onChange, onSubmit, plac
   }
 
   return (
-    <View style={{ position: 'relative', zIndex: 10 }}>
+    // 열려있는(open) 입력창을 항상 위로 — 포커스가 옮겨갈 때(블러 딜레이 150ms 동안) 두 드롭다운이
+    // 잠깐 동시에 열려도 겹쳐 보이지 않게, DOM 순서 대신 open 여부로 쌓임 순서를 정한다.
+    <View style={{ position: 'relative', zIndex: open ? 20 : 10 }}>
       <View style={styles.inputRow}>
         <View style={[styles.dot, { backgroundColor: dotColor }]} />
         <TextInput

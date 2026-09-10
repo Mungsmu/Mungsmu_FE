@@ -3,7 +3,7 @@ import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import { useNavigation } from '@react-navigation/native'
 import GangwonMap from '../components/GangwonMap'
 import { COURSES, GRADE } from '../data/mock'
-import { COLORS, RADIUS, SHADOW_MD } from '../theme'
+import { COLORS, RADIUS } from '../theme'
 
 const CATEGORIES = ['전체', '자연', '해안']
 
@@ -20,7 +20,7 @@ export default function CoursesScreen() {
       <Text style={styles.title}>안심 코스 큐레이션</Text>
       <Text style={styles.subtitle}>강원 18개 시군의 터널 노출도를 3등급으로 분류했어요. 지역을 골라 코스를 살펴보세요.</Text>
 
-      <View style={styles.mapCard}>
+      <View style={styles.mapWrap}>
         <GangwonMap selected={selected} onSelect={name => setSelected(p => p === name ? null : name)} />
       </View>
       <View style={styles.legendRow}>
@@ -81,7 +81,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bgPage },
   title: { fontSize: 24, fontWeight: '800', color: COLORS.textHead, marginBottom: 6 },
   subtitle: { fontSize: 13.5, color: COLORS.textSub, lineHeight: 19, marginBottom: 18 },
-  mapCard: { backgroundColor: '#fff', borderRadius: RADIUS.xl, padding: 10, marginBottom: 12, ...SHADOW_MD },
+  // 웹(src/pages/CoursesPage.jsx)처럼 카드로 감싸지 않고 지도 모양만 배경 위에 바로 띄운다.
+  mapWrap: { marginBottom: 20 },
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 24, flexWrap: 'wrap' },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 12, height: 12, borderRadius: 4, borderWidth: 1.5 },

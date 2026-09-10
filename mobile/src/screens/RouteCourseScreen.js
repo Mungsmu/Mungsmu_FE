@@ -1,14 +1,37 @@
+import { useEffect, useState } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import { useNavigation, useRoute } from '@react-navigation/native'
 import MockMap from '../components/MockMap'
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
+import { resolvePlace, hasKakaoKey } from '../lib/kakaoRest'
+import { fetchRoute } from '../lib/route'
 
 // 안심 코스 상세에서 "코스 안내"를 눌렀을 때 진입하는 화면 — 코스의 경유지를 순서대로
-// 이어서 길안내를 시작하기 전에 전체 동선을 미리 보여준다 (웹 RoutePage의 'course' 스텝과 동일).
+// 이어서 길안내를 시작하기 전에 전체 동선을 미리 보여준다 (웹 RoutePage의 'course' 스텝과 동일 —
+// 거기도 routeProfile="avoid"로 실제 터널 회피 도로 경로를 계산해서 보여준다).
 export default function RouteCourseScreen() {
   const nav = useNavigation()
   const { courseTitle, origin, dest, waypoints = [], distance, tunnelTag } = useRoute().params
   const allSpots = [origin, ...waypoints, dest]
+  const [routePath, setRoutePath] = useState(null)
+  const [spotPlaces, setSpotPlaces] = useState([]) // 각 경유지 지오코딩 결과 — 마커를 WebView 안 재검색 없이 바로 찍기 위함
+
+  useEffect(() => {
+    let cancelled = false
+    setRoutePath(null)
+    setSpotPlaces([])
+    if (!hasKakaoKey) return
+    ;(async () => {
+      const places = await Promise.all(allSpots.map(name => resolvePlace(name)))
+      if (cancelled || places.some(p => !p)) return
+      setSpotPlaces(places)
+      // 터널 회피(안심) 코스이므로 웹과 동일하게 exclude_tunnels 경로로 계산한다
+      const route = await fetchRoute(places, { excludeTunnels: true })
+      if (!cancelled && route) setRoutePath(route.path)
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allSpots.join('|')])
 
   const start = () => nav.navigate('Navigating', { origin, dest, waypoints })
 
@@ -19,9 +42,11 @@ export default function RouteCourseScreen() {
       <View style={styles.mapBox}>
         <MockMap
           showPath
+          path={routePath ?? undefined}
           markers={allSpots.map((name, i) => ({
             id: `${name}-${i}`, label: String(i + 1), query: name,
             color: i === 0 ? '#14807A' : i === allSpots.length - 1 ? '#D45B4E' : '#8A98A2',
+            lat: spotPlaces[i]?.lat, lng: spotPlaces[i]?.lng,
           }))}
         />
       </View>

@@ -10,7 +10,8 @@ function fmtDuration(min) {
 export default function RouteCompareScreen() {
   const nav = useNavigation()
   const { origin, dest, result = MOCK_RESULT } = useRoute().params
-  const topDiff = result.shortest.tunnels?.length ? Math.max(...result.shortest.tunnels.map(t => t.diff)) : null
+  const diffs = result.shortest.tunnels?.map(t => t.diff).filter(Boolean) ?? []
+  const topDiff = diffs.length ? Math.max(...diffs) : null
 
   const select = selectedRoute => nav.navigate('RouteDetail', { origin, dest, result, selectedRoute })
 
@@ -54,10 +55,10 @@ export default function RouteCompareScreen() {
             </View>
           )}
         </View>
-        {result.shortest.tunnelNames.length > 0 && (
+        {result.shortest.tunnels?.length > 0 && (
           <View style={{ flexDirection: 'row', gap: 4, marginTop: 6 }}>
-            {result.shortest.tunnelNames.slice(0, 3).map(name => (
-              <View key={name} style={styles.tunnelChip}><Text style={styles.tunnelChipText}>{name}</Text></View>
+            {result.shortest.tunnels.slice(0, 3).map((t, i) => (
+              <View key={t.id ?? `${t.name}-${i}`} style={styles.tunnelChip}><Text style={styles.tunnelChipText}>{t.name}</Text></View>
             ))}
           </View>
         )}

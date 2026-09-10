@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { View, Text, StyleSheet, Animated, Easing, Platform } from 'react-native'
+import { View, Text, StyleSheet, Animated, Easing } from 'react-native'
 import Svg, { Rect, Path } from 'react-native-svg'
 import * as Location from 'expo-location'
 import KakaoMapView from './KakaoMapView'
+import { resolvePlace } from '../lib/kakaoRest'
 import { COLORS } from '../theme'
 
-// react-native-webview는 web(react-native-web) 플랫폼을 지원하지 않는다 — 그 위에서는 에러 콜백 없이
-// "does not support this platform" 텍스트만 그려지므로, 웹 프리뷰(expo start --web)에서는 처음부터
-// 실제 지도를 시도하지 않고 SVG 목업으로 보여준다. 실기기(Android/iOS)에서는 실제 카카오맵을 쓴다.
-const HAS_JS_KEY = !!process.env.EXPO_PUBLIC_KAKAO_JS_KEY && Platform.OS !== 'web'
+// KakaoMapView는 플랫폼별로 갈린다: 네이티브(iOS/Android)는 KakaoMapView.js(react-native-webview),
+// 웹 프리뷰(expo start --web)는 KakaoMapView.web.js(실제 브라우저 iframe)를 Metro가 자동으로 골라 쓴다.
+// 두 경로 모두 로드에 실패하면(도메인 미등록 등) SVG 목업으로 조용히 대체한다.
+const HAS_JS_KEY = !!process.env.EXPO_PUBLIC_KAKAO_JS_KEY
 
 // 내비게이션 화면 배경 지도. 카카오맵 JS 키가 있으면 WebView로 실제 카카오맵을 띄우고,
 // 키가 없거나 로드에 실패하면(도메인 미등록 등) 기존 SVG 목업 지도로 조용히 대체한다.
@@ -86,10 +87,12 @@ function SvgMockMap({ children }) {
   )
 }
 
-export default function MockMap({ children, markers, showPath }) {
+export default function MockMap({ children, markers, showPath, path, navPosition }) {
   const [mapFailed, setMapFailed] = useState(false)
   const [coords, setCoords] = useState(null)
   const [hasFix, setHasFix] = useState(false)
+  const [resolvedMarkers, setResolvedMarkers] = useState([])
+  const markerQuery = markers?.map(m => (m.lat != null ? `${m.lat},${m.lng}` : m.query)).join('|') ?? ''
 
   useEffect(() => {
     if (!HAS_JS_KEY || markers?.length) return // 마커가 있으면 좌표는 마커 쪽으로 지도 범위를 맞추므로 현재 위치는 굳이 안 구해도 된다
@@ -104,12 +107,29 @@ export default function MockMap({ children, markers, showPath }) {
     })()
   }, [markers])
 
+  // 마커의 장소명(query)을 여기서 미리 좌표로 바꿔둔다. WebView 안 카카오맵 JS SDK의 자체
+  // 키워드 검색(Places.keywordSearch)에 맡기면, 지도 표시(JS 키)와 검색(Local API) 서비스의
+  // 콘솔 활성화·도메인 등록 조건이 달라서 지도는 뜨는데 검색만 401로 막히는 경우가 있다 —
+  // 실도로 경로 계산에 이미 쓰고 있는 카카오 REST 키(kakaoRest.resolvePlace, 별도 인증 경로)로
+  // 미리 좌표를 구해서 넘기면 그 문제를 완전히 피할 수 있다.
+  useEffect(() => {
+    if (!markers?.length) { setResolvedMarkers([]); return }
+    let cancelled = false
+    Promise.all(markers.map(async m => {
+      if (m.lat != null && m.lng != null) return m
+      const place = await resolvePlace(m.query)
+      return place ? { ...m, lat: place.lat, lng: place.lng } : null
+    })).then(list => { if (!cancelled) setResolvedMarkers(list.filter(Boolean)) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [markerQuery])
+
   if (HAS_JS_KEY && !mapFailed) {
     return (
       <View style={styles.container}>
         <KakaoMapView
           lat={coords?.lat} lng={coords?.lng} hasFix={hasFix}
-          markers={markers} showPath={showPath}
+          markers={markers?.length ? resolvedMarkers : markers} showPath={showPath} path={path} navPosition={navPosition}
           onError={() => setMapFailed(true)}
         />
         {children}

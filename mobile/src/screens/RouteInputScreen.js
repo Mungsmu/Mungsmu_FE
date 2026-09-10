@@ -51,7 +51,10 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bgPage },
   title: { fontSize: 24, fontWeight: '800', color: COLORS.textHead, marginBottom: 6 },
   subtitle: { fontSize: 13.5, color: COLORS.textSub, marginBottom: 18, lineHeight: 19 },
-  inputBox: { backgroundColor: COLORS.bgSubtle, borderRadius: RADIUS.lg, paddingHorizontal: 13, marginBottom: 14 },
+  // zIndex를 줘서 얘가 독립된 쌓임 맥락(stacking context)을 갖게 한다 — 안 그러면 내부 자동완성
+  // 드롭다운의 zIndex가 바깥의 검색 버튼·최근 검색 목록(둘 다 zIndex 없음)에는 안 먹혀서, 드롭다운이
+  // 그 위로 제대로 안 뜨고 화면 아래쪽 요소들과 겹쳐 보인다.
+  inputBox: { backgroundColor: COLORS.bgSubtle, borderRadius: RADIUS.lg, paddingHorizontal: 13, marginBottom: 14, zIndex: 5 },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: COLORS.border },
   button: { height: 46, borderRadius: RADIUS.md, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', marginBottom: 20 },
   buttonText: { color: '#fff', fontWeight: '800', fontSize: 14 },
