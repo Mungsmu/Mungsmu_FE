@@ -1,6 +1,7 @@
 import { TUNNELS, REGIONS } from './mock'
 import { resolvePlace, haversineM, hasKakaoKey } from '../lib/kakaoRest'
 import { fetchRoute, traceTunnels } from '../lib/route'
+import { findGangwonTunnel } from '../lib/tunnelGeo'
 
 export const RECENT = ['속초 해수욕장', '양양 낙산사', '강릉 경포해변']
 export const DEFAULT_TUNNEL = TUNNELS.find(t => t.name === '미시령터널')
@@ -21,10 +22,15 @@ export const MOCK_RESULT = {
 // 거리·소요시간은 실제 경로 기준. 최단 루트가 실제로 지나는 터널은 trace_attributes로 실측.
 // (웹의 src/pages/RoutePage.jsx computeRouteResult()와 동일 로직 — 카카오 REST 지오코딩만 다르다.)
 // 카카오 REST 키가 없거나 지오코딩이 실패하면 null을 반환해서 호출부가 MOCK_RESULT로 대체하도록 한다.
-export async function computeRouteResult(originStr, destStr) {
+// opts.originPlace: 이미 좌표를 아는 출발지(예: "현재 위치에서 출발" — GPS로 얻은 좌표는 텍스트로
+// 다시 지오코딩하면 엉뚱한 곳이 나올 수 있어 이 좌표를 그대로 쓴다)가 있으면 originStr 지오코딩을 건너뛴다.
+export async function computeRouteResult(originStr, destStr, { originPlace: fixedOriginPlace } = {}) {
   if (!hasKakaoKey) return null
   try {
-    const [originPlace, destPlace] = await Promise.all([resolvePlace(originStr), resolvePlace(destStr)])
+    const [originPlace, destPlace] = await Promise.all([
+      fixedOriginPlace ? Promise.resolve(fixedOriginPlace) : resolvePlace(originStr),
+      resolvePlace(destStr),
+    ])
     if (!originPlace || !destPlace) return null
 
     const straightKm = haversineM(originPlace, destPlace) / 1000
@@ -46,6 +52,10 @@ export async function computeRouteResult(originStr, destStr) {
           ?? (s.names.find(n => !/^\d+$/.test(n)) ? `${s.names.find(n => !/^\d+$/.test(n))} 터널` : null)
           ?? (s.names[0] ? `${s.names[0]}번 도로 터널` : '터널 구간')
         const known = TUNNELS.find(t => s.names.includes(t.name) || t.name === name)
+        // 큐레이션 목록(TUNNELS)에 없는 터널도 강원도 실측 데이터셋(404개)에서 이름으로 찾아
+        // 난이도·규격을 채운다 — 앱이 직접 큐레이션한 터널은 6개뿐이라 대부분의 실제 경로는
+        // 이 데이터셋 매칭에 의존한다.
+        const gw = !known ? (s.names.map(findGangwonTunnel).find(Boolean) ?? findGangwonTunnel(name)) : null
         // path 상의 실제 진입 좌표 — 지도에 터널 이름으로 재검색하는 대신 이 좌표를 바로 마커에 쓸 수 있다.
         // 구간 좌표(path)도 같이 잘라서 붙여두면, 동반 모드가 터널 이름을 다시 지오코딩해서 도로를
         // 재검증하는 불안정한 과정 없이 이 실측 구간을 그대로 주행 카메라 배경으로 쓸 수 있다.
@@ -54,7 +64,9 @@ export async function computeRouteResult(originStr, destStr) {
         const startIdx = Math.max(0, s.begin - BUFFER_PTS)
         const endIdx = Math.min(shortestRoute.path.length - 1, s.end + BUFFER_PTS)
         const path = shortestRoute.path.slice(startIdx, endIdx + 1)
-        return known ? { ...known, lat, lng, path } : { id: `trace-${i}`, name, lengthM: s.lengthM, diff: null, lat, lng, path }
+        if (known) return { ...known, lat, lng, path }
+        if (gw) return { id: gw.id, name, lengthM: s.lengthM, diff: gw.diff, lanes: gw.lanes, heightM: gw.heightM, lat, lng, path }
+        return { id: `trace-${i}`, name, lengthM: s.lengthM, diff: null, lat, lng, path }
       })
     }
 

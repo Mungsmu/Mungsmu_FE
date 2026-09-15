@@ -4,6 +4,7 @@ import Svg, { Rect, Path } from 'react-native-svg'
 import * as Location from 'expo-location'
 import KakaoMapView from './KakaoMapView'
 import { resolvePlace } from '../lib/kakaoRest'
+import { getCurrentPosition } from '../lib/geolocation'
 import { COLORS } from '../theme'
 
 // KakaoMapView는 플랫폼별로 갈린다: 네이티브(iOS/Android)는 KakaoMapView.js(react-native-webview),
@@ -36,7 +37,7 @@ function SvgMockMap({ children }) {
       const { status: perm } = await Location.requestForegroundPermissionsAsync()
       if (perm !== 'granted') { setStatus('denied'); return }
       try {
-        const pos = await Location.getCurrentPositionAsync({})
+        const pos = await getCurrentPosition()
         setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude })
         setStatus('ok')
       } catch {
@@ -100,7 +101,7 @@ export default function MockMap({ children, markers, showPath, path, navPosition
       const { status } = await Location.requestForegroundPermissionsAsync()
       if (status !== 'granted') return
       try {
-        const pos = await Location.getCurrentPositionAsync({})
+        const pos = await getCurrentPosition()
         setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude })
         setHasFix(true)
       } catch { /* 위치 못 구해도 지도 기본 중심으로 보여준다 */ }

@@ -34,6 +34,24 @@ export async function resolvePlace(query) {
   return result
 }
 
+// 좌표 → 주소 문자열. "현재 위치에서 출발" 버튼이 GPS로 얻은 좌표를 사람이 읽을 수 있는
+// 주소로 보여주는 데 쓴다. 실패하면 null — 호출부가 "현재 위치"라는 라벨로 대체한다.
+export async function reverseGeocode({ lat, lng }) {
+  if (!KAKAO_REST_KEY) return null
+  try {
+    const res = await fetch(`https://dapi.kakao.com/v2/local/geo/coord2address.json?x=${lng}&y=${lat}`, {
+      headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` },
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    const hit = data.documents?.[0]
+    if (!hit) return null
+    return hit.road_address?.address_name || hit.address?.address_name || null
+  } catch {
+    return null
+  }
+}
+
 export function haversineM(a, b) {
   const R = 6371000
   const toRad = d => (d * Math.PI) / 180

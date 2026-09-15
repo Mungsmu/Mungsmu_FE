@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import MockStreetMap from '../components/MockStreetMap.jsx'
 import PlaceAutocomplete from '../components/PlaceAutocomplete.jsx'
 import { loadKakaoMaps, coordToAddress } from '../lib/kakaoMap.js'
+import { getCurrentPosition } from '../lib/geolocation.js'
 import { COURSES, GRADE } from '../data/mock.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
@@ -15,14 +16,14 @@ export default function HomePage() {
   const [myLocation, setMyLocation] = useState('')
 
   useEffect(() => {
-    if (!KAKAO_KEY || !navigator.geolocation) return
-    navigator.geolocation.getCurrentPosition(async pos => {
+    if (!KAKAO_KEY) return
+    getCurrentPosition(async pos => {
       try {
         const kakao = await loadKakaoMaps(KAKAO_KEY)
         const addr = await coordToAddress(kakao, pos.coords.latitude, pos.coords.longitude)
         if (addr) setMyLocation(addr)
       } catch { /* 위치 표시는 실패해도 무시하고 '내 위치'로 폴백 */ }
-    }, () => {}, { timeout: 6000 })
+    }, () => {})
   }, [])
 
   const search = () => {

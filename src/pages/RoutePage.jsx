@@ -3,8 +3,10 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { TUNNELS, REGIONS } from '../data/mock.js'
 import MockStreetMap from '../components/MockStreetMap.jsx'
 import PlaceAutocomplete from '../components/PlaceAutocomplete.jsx'
-import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
+import { loadKakaoMaps, resolvePlace, haversineM, coordToAddress } from '../lib/kakaoMap.js'
 import { fetchRoute, traceTunnels } from '../lib/route.js'
+import { findGangwonTunnel } from '../lib/tunnelGeo.js'
+import { getCurrentPosition } from '../lib/geolocation.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const RECENT = ['속초 해수욕장', '양양 낙산사', '강릉 경포해변']
@@ -27,11 +29,16 @@ const MOCK_RESULT = {
 // 출발지·목적지를 실좌표로 바꾼 뒤 Valhalla로 실도로 경로 2개(최단 / 고속도로 회피)를 계산한다.
 // 거리·소요시간은 실제 경로 기준. 목적지가 속한 강원 시군을 매칭해 그 지역 터널들을 "최단 루트"에 연결한다.
 // Valhalla 호출이 실패하면 예전 방식(직선거리 보정 추정치)으로 폴백.
-async function computeRouteResult(originStr, destStr) {
+// opts.originPlace: 이미 좌표를 아는 출발지("현재 위치에서 출발" — GPS로 얻은 좌표는 텍스트로 다시
+// 지오코딩하면 엉뚱한 곳이 나올 수 있어 이 좌표를 그대로 쓴다)가 있으면 originStr 지오코딩을 건너뛴다.
+async function computeRouteResult(originStr, destStr, { originPlace: fixedOriginPlace } = {}) {
   if (!KAKAO_KEY) return null
   try {
     const kakao = await loadKakaoMaps(KAKAO_KEY)
-    const [originPlace, destPlace] = await Promise.all([resolvePlace(kakao, originStr), resolvePlace(kakao, destStr)])
+    const [originPlace, destPlace] = await Promise.all([
+      fixedOriginPlace ? Promise.resolve(fixedOriginPlace) : resolvePlace(kakao, originStr),
+      resolvePlace(kakao, destStr),
+    ])
     if (!originPlace || !destPlace) return null
 
     const straightKm = haversineM(originPlace, destPlace) / 1000
@@ -53,7 +60,20 @@ async function computeRouteResult(originStr, destStr) {
           ?? (s.names.find(n => !/^\d+$/.test(n)) ? `${s.names.find(n => !/^\d+$/.test(n))} 터널` : null)
           ?? (s.names[0] ? `${s.names[0]}번 도로 터널` : '터널 구간')
         const known = TUNNELS.find(t => s.names.includes(t.name) || t.name === name)
-        return known ?? { id: `trace-${i}`, name, lengthM: s.lengthM, diff: null }
+        // 큐레이션 목록(TUNNELS)에 없는 터널도 강원도 실측 데이터셋(404개)에서 이름으로 찾아
+        // 난이도·규격을 채운다 — 앱이 직접 큐레이션한 터널은 6개뿐이라 대부분의 실제 경로는
+        // 이 데이터셋 매칭에 의존한다.
+        const gw = !known ? (s.names.map(findGangwonTunnel).find(Boolean) ?? findGangwonTunnel(name)) : null
+        // path 상의 실제 진입 좌표 — 동반 모드가 터널 이름을 다시 지오코딩해서 위치·진행 방향을
+        // 추측하는 불안정한 과정 없이 이 실측 구간을 그대로 진입점·주행 카메라 배경으로 쓸 수 있다.
+        const [lat, lng] = shortestRoute.path[Math.min(s.begin, shortestRoute.path.length - 1)] ?? []
+        const BUFFER_PTS = 6
+        const startIdx = Math.max(0, s.begin - BUFFER_PTS)
+        const endIdx = Math.min(shortestRoute.path.length - 1, s.end + BUFFER_PTS)
+        const path = shortestRoute.path.slice(startIdx, endIdx + 1)
+        if (known) return { ...known, lat, lng, path }
+        if (gw) return { id: gw.id, name, lengthM: s.lengthM, diff: gw.diff, lanes: gw.lanes, heightM: gw.heightM, lat, lng, path }
+        return { id: `trace-${i}`, name, lengthM: s.lengthM, diff: null, lat, lng, path }
       })
     }
 
@@ -91,14 +111,48 @@ export default function RoutePage() {
   const [step, setStep] = useState(courseMode ? 'course' : 'input')
   const [selectedRoute, setSelectedRoute] = useState('avoid')
   const [loading, setLoading] = useState(false)
+  const [locating, setLocating] = useState(false)
+  const [locateError, setLocateError] = useState('')
+  // 출발지를 텍스트로 검색해 다시 지오코딩하면 실제 GPS 위치와 몇십~몇백m씩 어긋날 수 있다 —
+  // "현재 위치에서 출발"을 누르면 이 좌표를 원본 그대로 computeRouteResult에 넘겨 그 오차를 없앤다.
+  // 텍스트(주소) 일치 여부로 판단하면 역지오코딩 결과가 조금만 달라져도 조용히 깨지므로,
+  // 명시적인 플래그로 추적하고 사용자가 입력창을 직접 고치면 즉시 꺼버린다.
+  const [originCoords, setOriginCoords] = useState(null)
+  const [usingCurrentLocation, setUsingCurrentLocation] = useState(false)
   const [result, setResult] = useState(MOCK_RESULT)
   const route = result[selectedRoute]
   const tunnels = route.tunnels ?? []
 
+  const handleOriginChange = v => {
+    setOrigin(v)
+    setUsingCurrentLocation(false)
+  }
+
+  const useCurrentLocation = () => {
+    if (locating) return
+    setLocating(true)
+    setLocateError('')
+    getCurrentPosition(
+      async pos => {
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+        let address = null
+        if (KAKAO_KEY) {
+          try { address = await coordToAddress(await loadKakaoMaps(KAKAO_KEY), coords.lat, coords.lng) } catch { /* 실패 시 라벨로 대체 */ }
+        }
+        setOriginCoords({ ...coords, name: '현재 위치', address: address ?? '' })
+        setOrigin(address ?? '현재 위치')
+        setUsingCurrentLocation(true)
+        setLocating(false)
+      },
+      () => { setLocateError('위치를 확인할 수 없어요. 브라우저 위치 권한을 확인해주세요.'); setLocating(false) },
+    )
+  }
+
   const search = async () => {
     if (!origin.trim() || !dest.trim()) return
     setLoading(true)
-    const real = await computeRouteResult(origin.trim(), dest.trim())
+    const fixedOrigin = usingCurrentLocation ? originCoords : undefined
+    const real = await computeRouteResult(origin.trim(), dest.trim(), { originPlace: fixedOrigin })
     setResult(real ?? MOCK_RESULT)
     setLoading(false)
     setStep('compare')
@@ -167,15 +221,26 @@ export default function RoutePage() {
         <h1 style={{ fontSize:28, fontWeight:800, letterSpacing:'-0.8px', marginBottom:6 }}>안심 경로 길찾기</h1>
         <p style={{ fontSize:15, color:'#5B6C78', marginBottom:22 }}>터널 회피 경로와 최단 경로 비교 제공</p>
 
+        <div style={{ borderRadius:14, overflow:'hidden', height:150, border:'1px solid #E4EAEF', marginBottom:16 }}>
+          <MockStreetMap myLocation />
+        </div>
+
         <div style={{ background:'#F6F8FA', border:'1px solid #E4EAEF', borderRadius:13, padding:'5px 13px', marginBottom:16 }}>
           <div style={{ padding:'12px 0' }}>
-            <PlaceAutocomplete value={origin} onChange={setOrigin} dotColor="#14807A" placeholder="서울 (출발)" />
+            <PlaceAutocomplete value={origin} onChange={handleOriginChange} dotColor="#14807A" placeholder="서울 (출발)" />
           </div>
           <div style={{ borderBottom:'1px solid #E9EDF1' }} />
           <div style={{ padding:'12px 0' }}>
             <PlaceAutocomplete value={dest} onChange={setDest} onEnter={search} dotColor="#D45B4E" placeholder="강릉시 경포해변" />
           </div>
         </div>
+
+        <div onClick={useCurrentLocation}
+          style={{ display:'flex', alignItems:'center', gap:8, marginBottom: locateError ? 6 : 16, cursor: locating ? 'default' : 'pointer', opacity: locating ? 0.6 : 1 }}>
+          <span style={{ width:8, height:8, borderRadius:'50%', background:'#14807A' }} />
+          <span style={{ fontSize:12.5, fontWeight:700, color:'#14807A' }}>{locating ? '현재 위치 확인 중...' : '현재 위치에서 출발'}</span>
+        </div>
+        {locateError && <p style={{ fontSize:11.5, color:'#A53E33', marginBottom:16 }}>{locateError}</p>}
 
         <button onClick={search} disabled={!origin.trim() || !dest.trim() || loading}
           style={{ height:44, borderRadius:12, background:'#14807A', color:'#fff', fontWeight:800, fontSize:13.5, width:'100%', marginTop:16, cursor:'pointer', opacity: (!origin.trim() || !dest.trim() || loading) ? 0.45 : 1 }}>

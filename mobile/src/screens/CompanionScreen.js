@@ -11,6 +11,7 @@ import { haversineM, hasKakaoKey, resolvePlace } from '../lib/kakaoRest'
 import { cumulativeDistM, fetchRoute, traceTunnels } from '../lib/route'
 import { speak } from '../lib/speech'
 import { recordTunnelPass, getMonthlyPassCount } from '../lib/tunnelStats'
+import { resolveTunnelEndpoints } from '../lib/tunnelGeo'
 
 // 웹의 src/pages/CompanionPage.jsx와 동일 로직 — 5초 내쉬기 → 5초 들이마시기를 터널을 통과할
 // 때까지 반복. 화면 테두리가 내쉴 때 빨강, 들이마실 때 초록으로 5초에 걸쳐 차오르는 것으로만
@@ -23,6 +24,14 @@ const APPROACH_MS = 5000
 // 지오코딩·검증에 실패하면(카카오 키 없음 등) 주행 카메라 없이 기본 지도만 보여준다.
 // (웹의 src/pages/CompanionPage.jsx와 동일 로직)
 const TUNNEL_PASS_BEARINGS = [0, 45, 90, 135]
+// 터널 안은 GPS가 거의 잡히지 않아 실측 진행률을 못 구하는 경우가 대부분이다 — 그때는 진입 직전
+// 속도(entrySpeedKmh)와 터널 길이로 통과 소요 시간을 추정해 그 시간에 맞춰 자동으로 통과 처리한다.
+// entrySpeedKmh를 모르면(홈 화면 "동반 모드" 버튼으로 바로 들어온 튜토리얼 등) 기본값을 쓰고,
+// 정차·서행 중 진입했거나 비정상적으로 빠른 값이 들어와도 터널 안에서 하염없이 멈추거나 순식간에
+// 끝나버리지 않도록 상하한을 둔다.
+const DEFAULT_PASS_KMH = 80
+const MIN_PASS_KMH = 30
+const MAX_PASS_KMH = 110
 
 function fmtMMSS(totalSec) {
   const m = Math.floor(totalSec / 60)
@@ -36,7 +45,7 @@ export default function CompanionScreen() {
   const tunnel = params.tunnel ?? DEFAULT_TUNNEL
   const tunnels = params.tunnels ?? [tunnel]
   const remainingTunnels = tunnels.slice(1)
-  const { origin, dest, durationMin, distanceKm, waypoints = [], passedTunnels = [] } = params
+  const { origin, dest, durationMin, distanceKm, waypoints = [], passedTunnels = [], entrySpeedKmh } = params
   const isTutorial = !dest
 
   // phase: 'approach'(10m 전 팝업, 아직 호흡 없음) → 'breathing'(터널 안, 호흡 가이드 진행) → 'done'(튜토리얼 통과 완료, 나가기 대기)
@@ -57,12 +66,14 @@ export default function CompanionScreen() {
   const completedRef = useRef(false)
   const demoRouteRef = useRef(null) // { path, cum, totalM } — 주행 카메라가 따라갈 경로
 
-  // 0) 터널 구간 경로 확보. RouteInputScreen에서 실도로 경로를 계산할 때(computeRouteResult)
-  // 이미 traceTunnels로 검증해서 실제 터널 구간 좌표(tunnel.path)를 붙여준 경우 그걸 그대로 쓴다
-  // — 합성 이름(예: "서울양양고속도로 터널")은 장소명 검색으로 다시 지오코딩하면 엉뚱한 곳이 나올 수
-  // 있어서, 이미 검증된 좌표가 있으면 재검색하지 않는 것이 훨씬 안정적이다.
-  // 없으면(홈 화면 "동반 모드" 버튼으로 들어온 튜토리얼 등) 터널 이름을 지오코딩한 지점 전후로 몇
-  // 각도를 시도해 실도로 경로를 계산하고, traceTunnels()로 실제 이 터널을 지나는지 검증한다.
+  // 0) 터널 구간 경로 확보. 우선순위:
+  //   ① RouteInputScreen에서 실도로 경로를 계산할 때(computeRouteResult) 이미 traceTunnels로
+  //      검증해서 붙여준 실제 터널 구간 좌표(tunnel.path) — 있으면 그대로 쓴다.
+  //   ② 강원도 터널 실측 데이터셋(gangwonTunnels)에서 이름으로 찾은 실제 출입구 좌표 — 홈 화면
+  //      "동반 모드" 버튼으로 들어온 튜토리얼 등 ①이 없는 대부분의 경우 여기서 해결된다. 진입·진출
+  //      좌표를 이미 정확히 알고 있으므로 이름 지오코딩이나 진행 방향(bearing) 추측이 필요 없다.
+  //   ③ 그래도 못 찾으면(데이터셋에 없는 터널) 예전처럼 터널 이름을 지오코딩한 지점 전후로 몇 각도를
+  //      시도해 실도로 경로를 계산하고 traceTunnels()로 검증하는 폴백을 쓴다.
   useEffect(() => {
     let cancelled = false
     setTunnelPath(null)
@@ -75,6 +86,31 @@ export default function CompanionScreen() {
       demoRouteRef.current = { path: tunnel.path, cum, totalM: cum[cum.length - 1] }
       return
     }
+
+    const applyPath = path => {
+      if (cancelled) return
+      setTunnelPath(path)
+      const cum = cumulativeDistM(path)
+      demoRouteRef.current = { path, cum, totalM: cum[cum.length - 1] }
+    }
+
+    const endpoints = resolveTunnelEndpoints(tunnel)
+    if (endpoints) {
+      ;(async () => {
+        try {
+          // 정확한 출입구 좌표 사이의 실도로 경로를 구해서 곡선 형태로 보여준다 — 실패해도
+          // 두 좌표를 직선으로 잇는 것만으로 주행 카메라는 충분히 동작한다.
+          const route = await fetchRoute([endpoints.start, endpoints.end])
+          applyPath(route?.path?.length >= 2
+            ? route.path
+            : [[endpoints.start.lat, endpoints.start.lng], [endpoints.end.lat, endpoints.end.lng]])
+        } finally {
+          if (!cancelled) setPathResolved(true)
+        }
+      })()
+      return () => { cancelled = true }
+    }
+
     if (!hasKakaoKey) { setPathResolved(true); return }
     ;(async () => {
       try {
@@ -98,11 +134,7 @@ export default function CompanionScreen() {
             const startIdx = Math.max(0, seg.begin - BUFFER_PTS)
             const endIdx = Math.min(route.path.length - 1, seg.end + BUFFER_PTS)
             const trimmed = route.path.slice(startIdx, endIdx + 1)
-            if (trimmed.length >= 2 && !cancelled) {
-              setTunnelPath(trimmed)
-              const cum = cumulativeDistM(trimmed)
-              demoRouteRef.current = { path: trimmed, cum, totalM: cum[cum.length - 1] }
-            }
+            if (trimmed.length >= 2) applyPath(trimmed)
             return
           }
         }
@@ -176,11 +208,14 @@ export default function CompanionScreen() {
   }
 
   // 3) 터널 통과 진행률: 실제 이동거리(GPS 델타 누적)를 터널 길이와 비교. 호흡 단계에서만 진행되고,
-  // 실측이 안 되면(권한 거부·정지 상태 등) 타이머 데모로 대체한다.
+  // 실측이 안 되면(터널 안이라 GPS가 끊기는 경우가 대부분·권한 거부·정지 상태 등) 진입 시각 +
+  // 터널 길이/평균 속도로 통과 시점을 추정하는 타이머로 대체한다 — 실측이 도중에 들어오면
+  // 즉시 그쪽으로 넘어간다(아래 stopMock).
   useEffect(() => {
     if (phase !== 'breathing') return
     const lengthM = tunnel?.lengthM || 2000
     const warnAtM = Math.max(0, lengthM - EXIT_WARN_M)
+    const passSpeedMps = Math.min(MAX_PASS_KMH, Math.max(MIN_PASS_KMH, entrySpeedKmh || DEFAULT_PASS_KMH)) / 3.6
 
     const applyProgress = traveledM => {
       setPct(Math.min(100, Math.max(0, (traveledM / lengthM) * 100)))
@@ -202,7 +237,7 @@ export default function CompanionScreen() {
     const startMock = () => {
       if (usingGps || mockTimer) return
       mockTimer = setInterval(() => {
-        traveled += lengthM / 24
+        traveled += passSpeedMps
         applyProgress(traveled)
       }, 1000)
     }

@@ -8,6 +8,7 @@ import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
 import { cumulativeDistM, maneuverLabel, fetchRoute } from '../lib/route.js'
 import { speak } from '../lib/speech.js'
 import { getMonthlyPassCount } from '../lib/tunnelStats.js'
+import { resolveTunnelEndpoints } from '../lib/tunnelGeo.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const TUNNEL_TRIGGER_M = 10 // 터널 진입 예상 지점과 이 거리(m) 이내로 좁혀지면 동반 모드 자동 진입
@@ -56,6 +57,7 @@ export default function NavigatingPage() {
   const [routeError, setRouteError] = useState(false) // 경로 데이터 수신 실패
   const hazardsRef = useRef([])                        // [{ type, atM, speed }] 경로상 위험구간
   const reroutingRef = useRef(false)
+  const navRef = useRef(null) // nav 상태의 최신값 미러 — 터널 진입 트리거처럼 effect 클로저 밖에서 "지금 속도"가 필요한 곳에 쓴다
   const goHome = useCallback(() => navigate('/home'), [navigate])
 
   // 지도 컴포넌트가 Valhalla 실경로를 받아오면 턴바이턴에 필요한 누적거리 테이블을 준비한다.
@@ -136,7 +138,9 @@ export default function NavigatingPage() {
       speak(`잠시 후 ${maneuverLabel(man)}입니다.`)
     }
 
-    setNav({ lat, lng, heading, zoom, idx, man, distToManM, man2, distMan2M, curStreet, remainM, remainMin, speedKmh, hazard })
+    const next = { lat, lng, heading, zoom, idx, man, distToManM, man2, distMan2M, curStreet, remainM, remainMin, speedKmh, hazard }
+    navRef.current = next
+    setNav(next)
     setPct(Math.min(100, (traveledM / r.totalM) * 100))
   }
 
@@ -231,16 +235,27 @@ export default function NavigatingPage() {
     const trigger = () => {
       if (tunnelTriggeredRef.current) return
       tunnelTriggeredRef.current = true
-      navigate('/companion', { state: { tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels } })
+      navigate('/companion', {
+        state: {
+          tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels,
+          entrySpeedKmh: navRef.current?.speedKmh,
+        },
+      })
     }
 
     let cancelled = false
     let watchId = null
     ;(async () => {
-      if (!KAKAO_KEY || !navigator.geolocation) return
+      if (!navigator.geolocation) return
       try {
-        const kakao = await loadKakaoMaps(KAKAO_KEY)
-        const place = await resolvePlace(kakao, nextTunnel.name)
+        // 터널 진입점은 ①실도로 경로 추적 좌표 ②강원도 터널 실측 데이터셋(이름 매칭) ③마지막
+        // 수단으로 이름 지오코딩 순으로 구한다 — ①②는 카카오 키 없이도 동작한다.
+        const endpoints = resolveTunnelEndpoints(nextTunnel)
+        let place = endpoints?.start
+        if (!place && KAKAO_KEY) {
+          const kakao = await loadKakaoMaps(KAKAO_KEY)
+          place = await resolvePlace(kakao, nextTunnel.name)
+        }
         if (cancelled || !place) return
         watchId = navigator.geolocation.watchPosition(
           pos => {
@@ -263,7 +278,12 @@ export default function NavigatingPage() {
     if (!nextTunnel || gpsActive) return
     if (pct >= 55 && !tunnelTriggeredRef.current) {
       tunnelTriggeredRef.current = true
-      navigate('/companion', { state: { tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels } })
+      navigate('/companion', {
+        state: {
+          tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels,
+          entrySpeedKmh: navRef.current?.speedKmh,
+        },
+      })
     }
   }, [pct, nextTunnel, gpsActive])
 
@@ -398,7 +418,12 @@ export default function NavigatingPage() {
               <button
                 onClick={() => {
                   tunnelTriggeredRef.current = true
-                  navigate('/companion', { state: { tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels } })
+                  navigate('/companion', {
+                    state: {
+                      tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels,
+                      entrySpeedKmh: navRef.current?.speedKmh,
+                    },
+                  })
                 }}
                 style={{ flex: 1.4, height: 44, borderRadius: 12, background: '#14807A', color: '#fff', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>
                 동반 모드 시작

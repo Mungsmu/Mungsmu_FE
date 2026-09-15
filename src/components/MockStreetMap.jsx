@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
 import { fetchRoute } from '../lib/route.js'
+import { getCurrentPosition } from '../lib/geolocation.js'
 import { turnArrowSvg } from './NavOverlays.jsx'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
@@ -46,11 +47,9 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
   const markerQuery = markers?.map(m => m.query ?? `${m.lat},${m.lng}`).join('|') ?? ''
 
   useEffect(() => {
-    if (!navigator.geolocation) { setGeoError(true); return }
-    navigator.geolocation.getCurrentPosition(
+    getCurrentPosition(
       pos => setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
       () => setGeoError(true),
-      { timeout: 6000 },
     )
   }, [])
 

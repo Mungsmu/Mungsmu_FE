@@ -11,6 +11,7 @@ import { resolvePlace, haversineM, hasKakaoKey } from '../lib/kakaoRest'
 import { cumulativeDistM, maneuverLabel, fetchRoute } from '../lib/route'
 import { speak } from '../lib/speech'
 import { getMonthlyPassCount } from '../lib/tunnelStats'
+import { resolveTunnelEndpoints } from '../lib/tunnelGeo'
 
 // 웹의 src/pages/NavigatingPage.jsx와 동일 로직 — 실도로 경로(Valhalla) 기반 턴바이턴.
 // RouteDetailScreen이 이미 계산해둔 path/maneuvers가 있으면 그대로 쓰고(재요청 없음),
@@ -63,6 +64,7 @@ export default function NavigatingScreen() {
   const hazardsRef = useRef([])
   const reroutingRef = useRef(false)
   const completedRef = useRef(false)
+  const navStateRef = useRef(null) // navState의 최신값 미러 — 터널 진입 트리거처럼 effect 클로저 밖에서 "지금 속도"가 필요한 곳에 쓴다
 
   const handleRoute = route => {
     const cum = cumulativeDistM(route.path)
@@ -154,7 +156,9 @@ export default function NavigatingScreen() {
       speak(`잠시 후 ${maneuverLabel(man)}입니다.`)
     }
 
-    setNavState({ lat, lng, heading, zoom, idx, man, distToManM, man2, distMan2M, curStreet, remainM, remainMin, speedKmh, hazard })
+    const next = { lat, lng, heading, zoom, idx, man, distToManM, man2, distMan2M, curStreet, remainM, remainMin, speedKmh, hazard }
+    navStateRef.current = next
+    setNavState(next)
     setPct(Math.min(100, (traveledM / r.totalM) * 100))
   }
 
@@ -242,13 +246,18 @@ export default function NavigatingScreen() {
     const trigger = () => {
       if (tunnelTriggeredRef.current) return
       tunnelTriggeredRef.current = true
-      nav.navigate('Companion', { tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels })
+      nav.navigate('Companion', {
+        tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels,
+        entrySpeedKmh: navStateRef.current?.speedKmh,
+      })
     }
     let cancelled = false
     let watchSub = null
     ;(async () => {
-      if (!hasKakaoKey) return
-      const place = nextTunnel.lat != null ? { lat: nextTunnel.lat, lng: nextTunnel.lng } : await resolvePlace(nextTunnel.name)
+      // 터널 진입점은 ①실도로 경로 추적 좌표 ②강원도 터널 실측 데이터셋(이름 매칭) ③마지막
+      // 수단으로 이름 지오코딩 순으로 구한다 — ①②는 카카오 키 없이도 동작한다.
+      const endpoints = resolveTunnelEndpoints(nextTunnel)
+      const place = endpoints?.start ?? (hasKakaoKey ? await resolvePlace(nextTunnel.name) : null)
       if (cancelled || !place) return
       watchSub = await Location.watchPositionAsync(
         { accuracy: Location.Accuracy.High, timeInterval: 2000, distanceInterval: 2 },
@@ -267,7 +276,10 @@ export default function NavigatingScreen() {
     if (!nextTunnel || gpsActive) return
     if (pct >= 55 && !tunnelTriggeredRef.current) {
       tunnelTriggeredRef.current = true
-      nav.navigate('Companion', { tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels })
+      nav.navigate('Companion', {
+        tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels,
+        entrySpeedKmh: navStateRef.current?.speedKmh,
+      })
     }
   }, [pct, nextTunnel, gpsActive])
 
@@ -290,7 +302,10 @@ export default function NavigatingScreen() {
 
   const enterCompanion = () => {
     tunnelTriggeredRef.current = true
-    nav.navigate('Companion', { tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels })
+    nav.navigate('Companion', {
+      tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels,
+      entrySpeedKmh: navStateRef.current?.speedKmh,
+    })
   }
 
   const routeMarkers = [origin, ...waypoints, dest].map((name, i, arr) => ({
