@@ -44,10 +44,14 @@ export default function Layout() {
           <nav style={{ display:'flex', gap:4 }}>
             {NAV.map(({ to, label }) => (
               <NavLink key={to} to={to} style={({ isActive }) => ({
-                display: 'block', padding: '9px 16px', fontSize: 15, textDecoration: 'none',
+                // paddingBottom을 활성 상태에서만 다른 값으로 덮어써야 해서, 나머지 세 방향도
+                // padding 축약형 대신 각각 longhand로 써야 한다 — 축약형과 개별 속성을 섞어 쓰면
+                // 리액트가 리렌더 시 어느 쪽이 최종값인지 판단 못 해 "Removing a style property
+                // during rerender" 경고가 난다.
+                display: 'block', paddingTop: 9, paddingRight: 16, paddingLeft: 16, fontSize: 15, textDecoration: 'none',
                 ...(isActive
                   ? { color:'#0E5E58', fontWeight:700, borderBottom:'3px solid #14807A', borderRadius:0, background:'transparent', paddingBottom:13, opacity:1 }
-                  : { color:'#5B6C78', fontWeight:600, opacity:1, background:'transparent', borderRadius:'var(--r-sm)' }),
+                  : { color:'#5B6C78', fontWeight:600, opacity:1, background:'transparent', borderRadius:'var(--r-sm)', paddingBottom:9 }),
               })}>
                 {label}
               </NavLink>

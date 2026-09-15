@@ -9,11 +9,11 @@ function fmtDuration(min) {
 
 export default function RouteCompareScreen() {
   const nav = useNavigation()
-  const { origin, dest, result = MOCK_RESULT } = useRoute().params
+  const { origin, dest, result = MOCK_RESULT, waypoints = [] } = useRoute().params
   const diffs = result.shortest.tunnels?.map(t => t.diff).filter(Boolean) ?? []
   const topDiff = diffs.length ? Math.max(...diffs) : null
 
-  const select = selectedRoute => nav.navigate('RouteDetail', { origin, dest, result, selectedRoute })
+  const select = selectedRoute => nav.navigate('RouteDetail', { origin, dest, result, selectedRoute, waypoints })
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 20 }}>

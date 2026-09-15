@@ -3,11 +3,12 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import MockStreetMap from '../components/MockStreetMap.jsx'
 import TunnelBanner from '../components/TunnelBanner.jsx'
 import TunnelGauge from '../components/TunnelGauge.jsx'
+import TunnelProgressCard from '../components/TunnelProgressCard.jsx'
 import { TurnPanel, HazardWidget, SummaryBar, fmtDistM, fmtClock12 } from '../components/NavOverlays.jsx'
 import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
 import { cumulativeDistM, maneuverLabel, fetchRoute } from '../lib/route.js'
 import { speak } from '../lib/speech.js'
-import { getMonthlyPassCount } from '../lib/tunnelStats.js'
+import { recordTunnelPass, getMonthlyPassCount } from '../lib/tunnelStats.js'
 import { resolveTunnelEndpoints } from '../lib/tunnelGeo.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
@@ -15,6 +16,17 @@ const TUNNEL_TRIGGER_M = 10 // 터널 진입 예상 지점과 이 거리(m) 이�
 const DEMO_SPEED_MPS = 140  // 데모 주행 속도(m/s) — 실주행의 약 6배속. 거리뷰 줌에서도 화면을 따라갈 수 있는 수준
 const ON_ROUTE_MAX_M = 250  // GPS 좌표가 경로에서 이내면 "경로 위"로 보고 맵매칭
 const HAZARD_LOOKAHEAD_M = 1200 // 전방 위험구간 감지 범위
+const APPROACH_MS = 5000 // 10m 전 팝업을 보여주는 시간 — 이 동안은 아직 호흡 가이드가 시작되지 않는다
+const BREATH_MS = 5000
+const EXIT_WARN_M = 10
+// 추정 타이머로 진행 중이라도 실제 GPS가 터널 출구 좌표 이 거리(m) 이내에서 다시 잡히면 그걸
+// 우선해 즉시 통과 처리한다 — GPS 정확도·출구 앵커점 오차를 감안한 여유값.
+const EXIT_CONFIRM_M = 50
+// 터널 안은 GPS가 거의 잡히지 않아 실측 진행률을 못 구하는 경우가 대부분이다 — 그때는 진입 직전
+// 속도(nav.speedKmh)와 터널 길이로 통과 소요 시간을 추정해 그 시간에 맞춰 자동으로 통과 처리한다.
+const DEFAULT_PASS_KMH = 80
+const MIN_PASS_KMH = 30
+const MAX_PASS_KMH = 110
 
 // 전방 위험구간 데모 시드 (경로 총거리 대비 비율 위치) — 실데이터(공공데이터 무인단속카메라 등) 연결 지점
 const HAZARD_SEEDS = [
@@ -30,16 +42,20 @@ function fmtMMSS(totalSec) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
+// 동반 모드(터널 통과 호흡 가이드)는 예전에는 별도 페이지(/companion)로 전환했지만, 실제 주행
+// 중에는 페이지가 넘어갔다 돌아오면서 지도가 두 번 튀고 진행률이 끊기는 문제가 있어 이 페이지
+// 안에 오버레이로 통합했다 — 터널 진입~통과까지 지도·턴패널·하단 요약바 등 기존 내비 UI는 그대로
+// 유지한 채, 호흡 가이드 테두리·좌측 게이지·상단 보호자 호출 배너·터널 통과율만 덧붙였다가
+// 통과하면 그 UI만 사라진다. CompanionPage는 헤더 "동반 모드" 버튼으로 들어오는 실제 여정 없는
+// 튜토리얼 전용으로 그대로 남겨둔다.
 export default function NavigatingPage() {
   const navigate = useNavigate()
   const state = useLocation().state ?? {}
   const {
     origin = '출발지', dest = '목적지', durationMin = 192, distanceKm = 238,
     waypoints = [], tunnels: incomingTunnels, tunnel: singleTunnel,
-    passedTunnels = [],
+    passedTunnels: initialPassedTunnels = [], originPlace, destPlace,
   } = state
-  const tunnels = incomingTunnels ?? (singleTunnel ? [singleTunnel] : [])
-  const nextTunnel = tunnels[0] ?? null
 
   const [pct, setPct] = useState(0)
   const [dismissed, setDismissed] = useState(false)
@@ -50,7 +66,11 @@ export default function NavigatingPage() {
   const tunnelTriggeredRef = useRef(false)
   const routeRef = useRef(null)      // { path, cum, totalM, maneuvers, durationMin }
   const traveledRef = useRef(0)      // 경로 위 누적 이동거리(m)
-  const gpsLiveRef = useRef(false)   // GPS 실측이 주도권을 잡고 있는 동안 데모 주행 정지
+  const gpsLiveRef = useRef(false)   // GPS로 뭐라도(경로 위 실측이든 폴백 진행률이든) 추적 중 — 데모 주행 일시정지·정지 감지에만 쓴다
+  const onRouteRef = useRef(false)   // 경로 위에 실제로 스냅된 적이 있는지 — 이때 이탈하면만 재탐색한다.
+  // gpsLiveRef와 분리한 이유: 실제 위치가 경로에서 멀리 떨어진 채(책상 테스트 등) 폴백 진행률만
+  // 쓰고 있을 때도 gpsLiveRef는 true가 되는데, 그걸로 "이탈했다"고 재탐색을 걸면 애초에 경로 위에
+  // 있어본 적도 없이 매번 "현재 위치→목적지"로 경로가 통째로 바뀌어버린다(실측된 회귀 버그).
   const lastSpokenManRef = useRef(null)
   const [signalLost, setSignalLost] = useState(false) // 위치 신호 유실 — 마지막 값 유지 + 패널에 표시
   const [rerouting, setRerouting] = useState(false)   // 경로 이탈 → 재탐색 중
@@ -59,6 +79,24 @@ export default function NavigatingPage() {
   const reroutingRef = useRef(false)
   const navRef = useRef(null) // nav 상태의 최신값 미러 — 터널 진입 트리거처럼 effect 클로저 밖에서 "지금 속도"가 필요한 곳에 쓴다
   const goHome = useCallback(() => navigate('/home'), [navigate])
+
+  // 남은 터널 목록·통과한 터널 기록을 상태로 들고 있는다(예전처럼 페이지를 다시 navigate해서
+  // 새로 받는 게 아니라) — 그래야 터널을 하나 통과해도 지도·진행률·경로가 안 끊기고 이어진다.
+  const [tunnels, setTunnels] = useState(incomingTunnels ?? (singleTunnel ? [singleTunnel] : []))
+  const [passedTunnels, setPassedTunnels] = useState(initialPassedTunnels)
+  const nextTunnel = tunnels[0] ?? null
+
+  // 동반 모드(터널 통과) 오버레이 상태
+  const [tunnelPhase, setTunnelPhase] = useState(null) // null | 'approach'(10m 전 안내) | 'breathing'(호흡 가이드 진행)
+  const [breathPhase, setBreathPhase] = useState('exhale')
+  const [breathFrac, setBreathFrac] = useState(0)
+  const [tunnelPct, setTunnelPct] = useState(0)
+  const [tunnelExitWarned, setTunnelExitWarned] = useState(false)
+  const [guardianState, setGuardianState] = useState('idle')
+  const tunnelEnterTimeRef = useRef(null)
+  const tunnelExitWarnedRef = useRef(false)
+  const breathPhaseStartRef = useRef(Date.now())
+  const tunnelCompletedRef = useRef(false)
 
   // 지도 컴포넌트가 Valhalla 실경로를 받아오면 턴바이턴에 필요한 누적거리 테이블을 준비한다.
   const handleRoute = (route) => {
@@ -194,14 +232,20 @@ export default function NavigatingPage() {
               }
               if (bestD <= ON_ROUTE_MAX_M) {
                 gpsLiveRef.current = true
+                onRouteRef.current = true
                 setGpsActive(true)
                 updateNav(r.cum[best])
                 return
               }
-              // 실측 주행 중이었는데 경로에서 벗어남 → 경로 이탈로 보고 재탐색
-              if (gpsLiveRef.current) { reroute(here); return }
+              // "경로 위에 실제로 있어본 적이 있는데" 지금 멀어졌을 때만 이탈로 보고 재탐색한다.
+              if (onRouteRef.current) { onRouteRef.current = false; reroute(here); return }
             }
-            // 실경로가 없으면(계산 실패 등) 직선거리 기반 진행률 폴백
+            // 실경로가 없으면(계산 실패 등) 직선거리 기반 진행률 폴백. gpsLiveRef도 같이 켜둬야
+            // 아래 stallTimer가 "6초간 못 움직임"을 감지해서 다시 꺼줄 수 있다. onRouteRef는 여기서
+            // 켜지 않는다 — 이건 "경로 위에 있다"가 아니라 "경로랑 멀리 떨어진 채 폴백 중"이기
+            // 때문에, 이 상태에서 계속 멀리 있다고 재탐색을 걸면 매번 현재 위치로 경로가 통째로
+            // 바뀐다(실측된 회귀 버그).
+            gpsLiveRef.current = true
             setGpsActive(true)
             setPct(Math.min(100, Math.max(0, ((startDist - remain) / startDist) * 100)))
           },
@@ -212,6 +256,7 @@ export default function NavigatingPage() {
         stallTimer = setInterval(() => {
           if (gpsLiveRef.current && Date.now() - lastMoveAt > 6000) {
             gpsLiveRef.current = false // 정지 감지 → 데모 주행이 이어받는다
+            onRouteRef.current = false
             setGpsActive(false)
           }
         }, 2000)
@@ -225,24 +270,28 @@ export default function NavigatingPage() {
     }
   }, [dest])
 
+  // 터널 진입 — 예전에는 별도 페이지(/companion)로 전환했지만, 이제는 이 페이지 안에서 상태만
+  // 바꿔서 오버레이를 띄운다. 10m 전 안내 음성 후 5초 뒤 호흡 가이드가 시작되는 흐름은 그대로 유지.
+  const enterTunnelCompanion = () => {
+    if (tunnelTriggeredRef.current) return
+    tunnelTriggeredRef.current = true
+    setDismissed(false)
+    setTunnelExitWarned(false)
+    tunnelExitWarnedRef.current = false
+    setTunnelPct(0)
+    speak('터널 진입 10미터 전입니다. 곧 동반모드가 실행됩니다.')
+    setTunnelPhase('approach')
+    setTimeout(() => {
+      tunnelEnterTimeRef.current = Date.now()
+      tunnelCompletedRef.current = false
+      setTunnelPhase('breathing')
+    }, APPROACH_MS)
+  }
+
   // 다음 터널까지의 실거리를 구해서 10m 이내면 동반 모드로 자동 진입한다.
   // 실측이 안 되는 환경(카카오 키 없음·위치 권한 거부 등)에서는 진행률 55% 지점을 10m 전 신호로 대신 쓴다.
   useEffect(() => {
     if (!nextTunnel || tunnelTriggeredRef.current) return
-
-    // 10m 전 팝업·음성 안내와 호흡 시작은 CompanionPage가 순서대로 처리한다
-    // (여기서 먼저 말하고 넘어가면 팝업이 뜨기도 전에 호흡이 시작되는 싱크 문제가 생긴다).
-    const trigger = () => {
-      if (tunnelTriggeredRef.current) return
-      tunnelTriggeredRef.current = true
-      navigate('/companion', {
-        state: {
-          tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels,
-          entrySpeedKmh: navRef.current?.speedKmh,
-        },
-      })
-    }
-
     let cancelled = false
     let watchId = null
     ;(async () => {
@@ -261,7 +310,7 @@ export default function NavigatingPage() {
           pos => {
             const d = haversineM({ lat: pos.coords.latitude, lng: pos.coords.longitude }, place)
             setTunnelDistM(Math.round(d))
-            if (d <= TUNNEL_TRIGGER_M) trigger()
+            if (d <= TUNNEL_TRIGGER_M) enterTunnelCompanion()
           },
           () => {},
           { enableHighAccuracy: true, maximumAge: 3000 },
@@ -269,23 +318,163 @@ export default function NavigatingPage() {
       } catch { /* 실측 실패 시 아래 pct 기반 폴백에 맡긴다 */ }
     })()
     return () => { cancelled = true; if (watchId != null) navigator.geolocation.clearWatch(watchId) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nextTunnel])
 
-  // GPS 실측이 없거나(권한 거부 등) 정지 상태라 실거리가 안 움직이는 환경(책상 테스트 등)의
-  // 폴백: 진행률 55%를 "터널 10m 전"으로 간주한다. gpsActive는 정지 감지 시 다시 false로 돌아오므로
-  // 이 폴백이 항상 살아있게 된다.
+
+  // 호흡 가이드: 5초 내쉬기 → 5초 들이마시기를 터널을 통과할 때까지 계속 반복한다. 음성이 실제로
+  // 끝난 시점부터 5초를 세기 시작해서 "안내 음성 → 그 다음 5초간 호흡" 순서가 항상 지켜지게 한다.
   useEffect(() => {
-    if (!nextTunnel || gpsActive) return
-    if (pct >= 55 && !tunnelTriggeredRef.current) {
-      tunnelTriggeredRef.current = true
-      navigate('/companion', {
-        state: {
-          tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels,
-          entrySpeedKmh: navRef.current?.speedKmh,
+    if (tunnelPhase !== 'breathing') return
+    let cancelled = false
+    let tickTimer = null
+    const runPhase = ph => {
+      if (cancelled) return
+      setBreathPhase(ph)
+      setBreathFrac(0)
+      speak(ph === 'exhale' ? '5초간 숨을 내쉬세요.' : '5초간 숨을 들이마시세요.', {
+        onend: () => {
+          if (cancelled) return
+          breathPhaseStartRef.current = Date.now()
+          tickTimer = setInterval(() => {
+            const elapsed = Date.now() - breathPhaseStartRef.current
+            if (elapsed >= BREATH_MS) {
+              clearInterval(tickTimer)
+              runPhase(ph === 'exhale' ? 'inhale' : 'exhale')
+            } else {
+              setBreathFrac(elapsed / BREATH_MS)
+            }
+          }, 100)
         },
       })
     }
-  }, [pct, nextTunnel, gpsActive])
+    runPhase('exhale')
+    return () => {
+      cancelled = true
+      if (tickTimer) clearInterval(tickTimer)
+      window.speechSynthesis?.cancel()
+    }
+  }, [tunnelPhase])
+
+  const finishTunnel = () => {
+    if (tunnelCompletedRef.current || !nextTunnel) return
+    tunnelCompletedRef.current = true
+    const passedTunnel = nextTunnel
+    const sec = (Date.now() - (tunnelEnterTimeRef.current ?? Date.now())) / 1000
+    recordTunnelPass()
+    speak('터널을 통과하셨습니다.')
+    setTunnelPct(100)
+    setTimeout(() => {
+      setPassedTunnels(prev => [...prev, { name: passedTunnel.name, diff: passedTunnel.diff, sec }])
+      setTunnels(prev => prev.slice(1))
+      setTunnelPhase(null)
+      tunnelTriggeredRef.current = false
+    }, 1600)
+  }
+
+  // 터널 통과 진행률: 실제 이동거리(GPS)를 터널 길이와 비교해서 계산. 호흡 단계에서만 진행되고,
+  // 실측이 안 되면(터널 안이라 GPS가 끊기는 경우가 대부분·카카오 키 없음·위치 권한 거부 등) 진입
+  // 시각 + 터널 길이/평균 속도로 통과 시점을 추정하는 타이머로 대체한다. 실측이 한 번 잡혔더라도
+  // 그 뒤 일정 시간 갱신이 없으면(터널 진입 직후 신호 유실) 다시 타이머로 넘어간다 — 안 그러면
+  // 진입 직후 GPS가 딱 한 번 잡히고 끊기는 순간 진행률이 영원히 멈춰버린다(실측된 버그).
+  useEffect(() => {
+    if (tunnelPhase !== 'breathing' || !nextTunnel) return
+    const tunnel = nextTunnel
+    const lengthM = tunnel.lengthM || 2000
+    const warnAtM = Math.max(0, lengthM - EXIT_WARN_M)
+    const passSpeedMps = Math.min(MAX_PASS_KMH, Math.max(MIN_PASS_KMH, navRef.current?.speedKmh || DEFAULT_PASS_KMH)) / 3.6
+    // 실제 출구 좌표 — 터널 안에서 GPS가 다시 잡히는 순간(출구 부근에서 흔히 일어난다) 이 좌표와
+    // 비교해서, 속도·길이로 추정한 타이머가 아직 안 끝났어도 실제로 이미 빠져나왔으면 즉시
+    // 통과 처리한다. 이게 없으면 실제보다 느리게 추정했을 때 이미 빠져나온 뒤에도 동반 모드가
+    // 계속 진행 중인 것처럼 보일 수 있다.
+    const exitPoint = resolveTunnelEndpoints(tunnel)?.end
+
+    const applyProgress = traveledM => {
+      setTunnelPct(Math.min(100, Math.max(0, (traveledM / lengthM) * 100)))
+      if (traveledM >= warnAtM && !tunnelExitWarnedRef.current) {
+        tunnelExitWarnedRef.current = true
+        setTunnelExitWarned(true)
+        speak('터널 통과 10미터 전.')
+      }
+      if (traveledM >= lengthM) finishTunnel()
+    }
+
+    let cancelled = false
+    let watchId = null
+    let mockTimer = null
+    let usingGps = false
+    let last = null
+    let traveled = 0
+    let lastGpsAt = Date.now()
+    let stallTimer = null
+
+    const startMock = () => {
+      if (mockTimer) return
+      mockTimer = setInterval(() => {
+        traveled += passSpeedMps
+        applyProgress(traveled)
+      }, 1000)
+    }
+    const stopMock = () => { if (mockTimer) { clearInterval(mockTimer); mockTimer = null } }
+
+    ;(async () => {
+      if (!navigator.geolocation) { startMock(); return }
+      try {
+        watchId = navigator.geolocation.watchPosition(
+          pos => {
+            const cur = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+            // 추정 타이머로 진행 중이더라도, 실제 GPS가 출구 근처(50m 이내)에서 다시 잡히면
+            // 그걸 우선해 즉시 통과 처리한다 — 실제로는 이미 빠져나왔는데 느린 추정 탓에 계속
+            // "통과 중"으로 남아있는 일을 막는다.
+            if (exitPoint && haversineM(cur, exitPoint) <= EXIT_CONFIRM_M) {
+              finishTunnel()
+              return
+            }
+            if (last) {
+              const delta = haversineM(last, cur)
+              if (delta > 0.5 && delta < 200) {
+                traveled += delta
+                usingGps = true
+                lastGpsAt = Date.now()
+                stopMock()
+                applyProgress(traveled)
+              }
+            }
+            last = cur
+          },
+          () => startMock(),
+          { enableHighAccuracy: true, maximumAge: 2000 },
+        )
+        setTimeout(() => { if (!usingGps) startMock() }, 4000)
+        stallTimer = setInterval(() => {
+          if (usingGps && Date.now() - lastGpsAt > 5000) {
+            usingGps = false
+            startMock()
+          }
+        }, 1000)
+      } catch {
+        if (!cancelled) startMock()
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      stopMock()
+      if (stallTimer) clearInterval(stallTimer)
+      if (watchId != null) navigator.geolocation.clearWatch(watchId)
+    }
+  }, [tunnelPhase, nextTunnel])
+
+  const callGuardian = () => {
+    if (guardianState === 'calling') return
+    setGuardianState('calling')
+    speak('보호자를 호출합니다.')
+    setTimeout(() => {
+      setGuardianState('sent')
+      speak('보호자 호출 완료.')
+      setTimeout(() => setGuardianState('idle'), 4000)
+    }, 1200)
+  }
 
   const arrived = pct >= 100
   useEffect(() => {
@@ -295,17 +484,31 @@ export default function NavigatingPage() {
     }
   }, [arrived])
 
+  const inTunnel = tunnelPhase != null
+  const breathing = tunnelPhase === 'breathing'
+  // 동반 모드는 실제 터널 좌표에 실측으로 가까워졌을 때만 뜬다(tunnelDistM은 위 GPS 워처가 채움) —
+  // 진행률(pct) 기반 데모 추정은 실제 터널이 아닌 엉뚱한 지점에서 동반 모드를 띄울 수 있어 쓰지 않는다.
   const approachingSoon = !!nextTunnel && !tunnelTriggeredRef.current && !arrived && !dismissed
-    && (tunnelDistM != null ? tunnelDistM <= 400 : pct >= 40)
-  const distanceLeftM = approachingSoon ? (tunnelDistM ?? Math.max(10, Math.round(300 * (1 - Math.min((pct - 40) / 15, 1)) / 10) * 10)) : null
+    && tunnelDistM != null && tunnelDistM <= 400
+  const distanceLeftM = approachingSoon ? tunnelDistM : null
 
   const totalPassSec = passedTunnels.reduce((a, t) => a + (t.sec ?? 0), 0)
+  const breathBorderColor = breathPhase === 'exhale' ? '212,91,78' : '46,158,107' // 내쉬기=빨강, 들이마시기=초록
+  const breathThickness = Math.round(breathFrac * 30)
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 60, fontFamily: 'Pretendard, sans-serif' }}>
+      {/* 동반 모드 호흡 가이드 테두리 — 기존 내비 UI를 가리지 않도록 화면 맨 위에 얇게 덧그린다 */}
+      {breathing && (
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none',
+          boxShadow: `inset 0 0 0 ${breathThickness}px rgba(${breathBorderColor},.55)`,
+        }} />
+      )}
+
       <MockStreetMap
         showPath
-        routeProfile="avoid"
+        routeProfile={nextTunnel ? 'shortest' : 'avoid'}
         onRoute={handleRoute}
         navPosition={nav && !arrived ? { lat: nav.lat, lng: nav.lng, heading: nav.heading, zoom: nav.zoom } : null}
         navGuide={nav && !arrived ? { progressIdx: nav.idx, turnIdx: nav.man?.idx ?? null, turnType: nav.man?.type } : null}
@@ -313,10 +516,12 @@ export default function NavigatingPage() {
         markers={[origin, ...waypoints, dest].map((name, i, arr) => ({
           id:`${i}`, label: i === 0 ? '출발' : i === arr.length - 1 ? '도착' : String(i + 1), query:name,
           color: i === 0 ? '#8A98A2' : i === arr.length - 1 ? '#D45B4E' : '#14807A',
+          ...(i === 0 && originPlace ? { lat: originPlace.lat, lng: originPlace.lng } : {}),
+          ...(i === arr.length - 1 && destPlace ? { lat: destPlace.lat, lng: destPlace.lng } : {}),
         }))}
       >
-        {/* [기능 1] 턴바이턴 안내 패널 — 도착·터널 접근 시에는 숨긴다 */}
-        {nav?.man && !arrived && !approachingSoon ? (
+        {/* [기능 1] 턴바이턴 안내 패널 — 도착·터널 접근·동반 모드 중에는 숨긴다 */}
+        {nav?.man && !arrived && !approachingSoon && !inTunnel ? (
           <>
             <TurnPanel
               manType={nav.man.type}
@@ -337,16 +542,31 @@ export default function NavigatingPage() {
         ) : (
           <div style={{ position: 'absolute', top: 16, right: 16, display: 'flex', alignItems: 'center', gap: 8, zIndex: 1, pointerEvents: 'auto' }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#5B6C78', background: 'rgba(255,255,255,.94)', border: '1px solid #E4EAEF', borderRadius: 99, padding: '7px 13px' }}>
-              {arrived ? '도착 완료' : rerouting ? '경로 재탐색 중…' : gpsActive ? '주행 중 · GPS 실측' : '주행 중 · 내비게이션'}
+              {arrived ? '도착 완료' : inTunnel ? '동반 모드 진행 중' : rerouting ? '경로 재탐색 중…' : gpsActive ? '주행 중 · GPS 실측' : '주행 중 · 내비게이션'}
             </span>
             <button onClick={goHome} style={{ color: '#5B6C78', fontWeight: 700, fontSize: 13, background: 'rgba(255,255,255,.94)', border: '1px solid #E4EAEF', borderRadius: 99, padding: '7px 13px', cursor: 'pointer' }}>나가기 ✕</button>
           </div>
         )}
 
-        {/* [기능 2] 전방 위험구간 경고 — 감지된 경우에만 렌더 (미감지 시 DOM 자체가 없음) */}
-        {nav?.hazard && !arrived && (
+        {/* [기능 2] 전방 위험구간 경고 — 감지된 경우에만 렌더 (동반 모드 중에는 좌측 게이지와 겹치므로 숨김) */}
+        {nav?.hazard && !arrived && !inTunnel && (
           <HazardWidget type={nav.hazard.type} distText={fmtDistM(nav.hazard.distM)} speed={nav.hazard.speed} />
         )}
+
+        {/* 동반 모드 오버레이 — 상단 가운데 배너(10m 전 안내 / 보호자 호출 / 통과 임박)와 좌측 게이지 */}
+        {tunnelPhase === 'approach' ? (
+          <TunnelBanner title="터널 진입 10m 전" subtitle="곧 동반모드가 시작됩니다" />
+        ) : tunnelExitWarned ? (
+          <TunnelBanner title="터널 통과 10m 전" subtitle="곧 도착해요, 조금만 더 힘내요" />
+        ) : breathing ? (
+          <TunnelBanner
+            title={guardianState === 'calling' ? '보호자 호출 중...' : '보호자 호출'}
+            subtitle={guardianState === 'sent' ? '- 메시지 전송 완료 -' : '탭하여 보호자를 호출해요'}
+            onClick={callGuardian}
+            disabled={guardianState === 'calling'}
+          />
+        ) : null}
+        {breathing && <TunnelGauge pct={tunnelPct} />}
 
         {approachingSoon && (
           <>
@@ -388,7 +608,7 @@ export default function NavigatingPage() {
           </div>
         )}
 
-        {/* 하단: 속도계 + [기능 3] 주행 요약 바 */}
+        {/* 하단: 속도계 + 터널 통과율 + [기능 3] 주행 요약 바 */}
         <div style={{ position: 'absolute', left: 16, right: 16, bottom: 16, pointerEvents: 'auto' }}>
           {!arrived && nav && (
             <div style={{ display: 'flex', alignItems: 'flex-end', marginBottom: 10, pointerEvents: 'none' }}>
@@ -397,6 +617,14 @@ export default function NavigatingPage() {
                 <span style={{ fontSize: 21, fontWeight: 800, lineHeight: 1, color: '#16242E', fontVariantNumeric: 'tabular-nums' }}>{nav.speedKmh}</span>
                 <span style={{ fontSize: 8.5, fontWeight: 700, color: '#8A98A2', marginTop: 2 }}>km/h</span>
               </div>
+            </div>
+          )}
+
+          {/* 터널 통과율 — 동반 모드 튜토리얼(CompanionPage)과 같은 카드. 기존 하단 요약바
+              (실제 주행 도로·남은 거리·도착 예정)는 그대로 두고 그 위에 덧붙인다 */}
+          {breathing && nextTunnel && (
+            <div style={{ marginBottom: 10 }}>
+              <TunnelProgressCard name={nextTunnel.name} pct={tunnelPct} />
             </div>
           )}
 
@@ -416,15 +644,7 @@ export default function NavigatingPage() {
             <div style={{ display: 'flex', gap: 9, marginTop: 10 }}>
               <button onClick={() => setDismissed(true)} style={{ flex: 1, height: 44, borderRadius: 12, background: '#fff', color: '#5B6C78', fontWeight: 700, fontSize: 13, cursor: 'pointer', boxShadow: '0 4px 14px rgba(20,40,60,.1)' }}>나중에</button>
               <button
-                onClick={() => {
-                  tunnelTriggeredRef.current = true
-                  navigate('/companion', {
-                    state: {
-                      tunnel: nextTunnel, tunnels, origin, dest, durationMin, distanceKm, waypoints, passedTunnels,
-                      entrySpeedKmh: navRef.current?.speedKmh,
-                    },
-                  })
-                }}
+                onClick={enterTunnelCompanion}
                 style={{ flex: 1.4, height: 44, borderRadius: 12, background: '#14807A', color: '#fff', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>
                 동반 모드 시작
               </button>

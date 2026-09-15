@@ -82,10 +82,14 @@ export function RoadTokens({ street, dark }) {
 }
 
 // ─── [기능 1] 턴바이턴 안내 패널 (화면 상단) ─────────────────
-export function TurnPanel({ manType, distText, streetText, subManType, subDistText, subLabel, signalLost, rerouting, onExit }) {
+// topOffset: 노치·다이나믹 아일랜드가 있는 기기의 상단 안전영역(safe area)만큼 내용을 더 밀어야
+// 할 때 화면(NavigatingScreen)에서 insets.top을 넘겨준다. 배경 바 자체는 화면 맨 위(top:0)까지
+// 꽉 채우고(실제 내비 앱처럼 상단 베젤까지 색이 이어지는 모양), 안의 내용(화살표·거리·나가기
+// 버튼)만 안전영역만큼 아래로 내려서 노치에 가려지거나 눌리지 않게 한다.
+export function TurnPanel({ manType, distText, streetText, subManType, subDistText, subLabel, signalLost, rerouting, onExit, topOffset = 0 }) {
   return (
     <View style={styles.turnPanelWrap} pointerEvents="box-none">
-      <View style={styles.turnPanelBar}>
+      <View style={[styles.turnPanelBar, { paddingTop: 13 + topOffset }]}>
         <TurnArrow type={manType} size={50} />
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.turnDist}>{distText}</Text>

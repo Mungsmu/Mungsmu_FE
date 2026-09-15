@@ -58,9 +58,27 @@ export default function GangwonMap({ selected, onSelect }) {
           const m = GRADE[r.grade]
           const geo = GANGWON_GEO[r.name]
           if (!geo) return null
+          const transform = labelTransform(geo.labelX, geo.labelY)
+          // paintOrder="stroke"(테두리를 채우기보다 먼저 그려서 얇은 글자가 두꺼운 흰 테두리에
+          // 안 파묻히게 하는 SVG2 속성)는 react-native-svg의 네이티브(iOS/Android) 렌더러가
+          // 지원하지 않는다 — 웹(react-native-svg-web)에서는 실제 브라우저 SVG 렌더러에 위임되어
+          // 정상 동작하지만, 네이티브에서는 무시되고 기본 순서(채우기 → 테두리)로 그려져서 굵은
+          // 흰 테두리가 글자를 통째로 덮어 흰 박스처럼 보인다. paintOrder에 기대는 대신 흰 테두리
+          // 전용 텍스트(채우기 없음)를 먼저 그리고 그 위에 색이 있는 텍스트(테두리 없음)를 겹쳐
+          // 그려서, 렌더러 지원 여부와 무관하게 항상 같은 순서로 그려지도록 한다.
+          return (
+            <SvgText key={`${r.name}-outline`} x={geo.labelX} y={geo.labelY} fontSize={14.5} fontWeight="800"
+              fill="none" stroke="#fff" strokeWidth={3} strokeLinejoin="round" textAnchor="middle"
+              transform={transform}>{r.name}</SvgText>
+          )
+        })}
+        {REGIONS.map(r => {
+          const m = GRADE[r.grade]
+          const geo = GANGWON_GEO[r.name]
+          if (!geo) return null
           return (
             <SvgText key={r.name} x={geo.labelX} y={geo.labelY} fontSize={14.5} fontWeight="800"
-              fill={m.color} stroke="#fff" strokeWidth={3} strokeLinejoin="round" paintOrder="stroke" textAnchor="middle"
+              fill={m.color} textAnchor="middle"
               transform={labelTransform(geo.labelX, geo.labelY)}>{r.name}</SvgText>
           )
         })}

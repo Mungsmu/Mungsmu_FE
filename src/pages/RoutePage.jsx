@@ -5,7 +5,7 @@ import MockStreetMap from '../components/MockStreetMap.jsx'
 import PlaceAutocomplete from '../components/PlaceAutocomplete.jsx'
 import { loadKakaoMaps, resolvePlace, haversineM, coordToAddress } from '../lib/kakaoMap.js'
 import { fetchRoute, traceTunnels } from '../lib/route.js'
-import { findGangwonTunnel } from '../lib/tunnelGeo.js'
+import { findGangwonTunnel, nearestGangwonTunnel } from '../lib/tunnelGeo.js'
 import { getCurrentPosition } from '../lib/geolocation.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
@@ -16,6 +16,7 @@ const TUNNEL_PREVIEW_MAX = 3
 
 // 카카오 키가 없거나 지오코딩이 실패했을 때만 쓰는 목업 결과값 (기존 데모 그대로 유지)
 const MOCK_RESULT = {
+  hasTunnel: true,
   avoid: {
     durationMin: 192, distanceKm: 238, tunnelCount: 0,
     waypoints: ['영동고속 → 7번 국도 진입', '동해안 해안 라인 경유'],
@@ -31,25 +32,28 @@ const MOCK_RESULT = {
 // Valhalla 호출이 실패하면 예전 방식(직선거리 보정 추정치)으로 폴백.
 // opts.originPlace: 이미 좌표를 아는 출발지("현재 위치에서 출발" — GPS로 얻은 좌표는 텍스트로 다시
 // 지오코딩하면 엉뚱한 곳이 나올 수 있어 이 좌표를 그대로 쓴다)가 있으면 originStr 지오코딩을 건너뛴다.
-async function computeRouteResult(originStr, destStr, { originPlace: fixedOriginPlace } = {}) {
+// opts.waypoints: 출발지·목적지 사이를 순서대로 경유하는 지점 이름들(안심 코스의 중간 경유지 등).
+// 실제로 지나는 터널이 하나도 없으면(hasTunnel: false) 회피 경로는 최단 경로와 완전히 같은
+// 길이므로 따로 계산하지 않고 하나만 반환한다 — 비교할 게 없을 때 굳이 두 경로를 보여줄 필요가 없다.
+async function computeRouteResult(originStr, destStr, { originPlace: fixedOriginPlace, waypoints: waypointStrs = [] } = {}) {
   if (!KAKAO_KEY) return null
   try {
     const kakao = await loadKakaoMaps(KAKAO_KEY)
-    const [originPlace, destPlace] = await Promise.all([
+    const [originPlace, ...rest] = await Promise.all([
       fixedOriginPlace ? Promise.resolve(fixedOriginPlace) : resolvePlace(kakao, originStr),
+      ...waypointStrs.map(w => resolvePlace(kakao, w)),
       resolvePlace(kakao, destStr),
     ])
-    if (!originPlace || !destPlace) return null
+    const destPlace = rest.pop()
+    const waypointPlaces = rest
+    if (!originPlace || !destPlace || waypointPlaces.some(p => !p)) return null
+    const routePoints = [originPlace, ...waypointPlaces, destPlace]
 
     const straightKm = haversineM(originPlace, destPlace) / 1000
     const region = REGIONS.find(r => destPlace.address.includes(r.name) || destPlace.name.includes(r.name) || destStr.includes(r.name))
     let tunnels = region ? TUNNELS.filter(t => t.region === region.name) : [] // 실측 실패 시 폴백
 
-    const [shortestRoute, avoidRoute] = await Promise.all([
-      fetchRoute([originPlace, destPlace]),
-      // 터널 회피 루트 = 터널을 아예 지나지 않는 경로 (옛 고갯길 등으로 우회)
-      fetchRoute([originPlace, destPlace], { excludeTunnels: true }),
-    ])
+    const shortestRoute = await fetchRoute(routePoints)
 
     // 최단 루트가 실제로 지나는 터널을 실측 (500m 이상 장대터널만 집계, 짧은 지하차도 제외)
     const traced = shortestRoute ? await traceTunnels(shortestRoute.shapes) : null
@@ -60,37 +64,58 @@ async function computeRouteResult(originStr, destStr, { originPlace: fixedOrigin
           ?? (s.names.find(n => !/^\d+$/.test(n)) ? `${s.names.find(n => !/^\d+$/.test(n))} 터널` : null)
           ?? (s.names[0] ? `${s.names[0]}번 도로 터널` : '터널 구간')
         const known = TUNNELS.find(t => s.names.includes(t.name) || t.name === name)
-        // 큐레이션 목록(TUNNELS)에 없는 터널도 강원도 실측 데이터셋(404개)에서 이름으로 찾아
-        // 난이도·규격을 채운다 — 앱이 직접 큐레이션한 터널은 6개뿐이라 대부분의 실제 경로는
-        // 이 데이터셋 매칭에 의존한다.
-        const gw = !known ? (s.names.map(findGangwonTunnel).find(Boolean) ?? findGangwonTunnel(name)) : null
         // path 상의 실제 진입 좌표 — 동반 모드가 터널 이름을 다시 지오코딩해서 위치·진행 방향을
         // 추측하는 불안정한 과정 없이 이 실측 구간을 그대로 진입점·주행 카메라 배경으로 쓸 수 있다.
         const [lat, lng] = shortestRoute.path[Math.min(s.begin, shortestRoute.path.length - 1)] ?? []
+        // 큐레이션 목록(TUNNELS)에 없는 터널도 강원도 실측 데이터셋(404개)에서 찾아 난이도·규격을
+        // 채운다 — 앱이 직접 큐레이션한 터널은 6개뿐이라 대부분의 실제 경로는 이 데이터셋 매칭에
+        // 의존한다. OSM 도로명이 "미시령로"처럼 "터널"을 포함하지 않아 이름 매칭이 실패하는 경우가
+        // 있어, 마지막 수단으로 진입 좌표와 가장 가까운 터널을 찾는다(300m 이내).
+        const gw = !known
+          ? (s.names.map(findGangwonTunnel).find(Boolean) ?? findGangwonTunnel(name)
+            ?? (lat != null ? nearestGangwonTunnel({ lat, lng }, 300) : null))
+          : null
         const BUFFER_PTS = 6
         const startIdx = Math.max(0, s.begin - BUFFER_PTS)
         const endIdx = Math.min(shortestRoute.path.length - 1, s.end + BUFFER_PTS)
         const path = shortestRoute.path.slice(startIdx, endIdx + 1)
         if (known) return { ...known, lat, lng, path }
-        if (gw) return { id: gw.id, name, lengthM: s.lengthM, diff: gw.diff, lanes: gw.lanes, heightM: gw.heightM, lat, lng, path }
+        if (gw) return { id: gw.id, name: gw.name.replace(/\([^)]*\)\s*$/, ''), lengthM: s.lengthM, diff: gw.diff, lanes: gw.lanes, heightM: gw.heightM, lat, lng, path }
         return { id: `trace-${i}`, name, lengthM: s.lengthM, diff: null, lat, lng, path }
       })
     }
 
-    const avoidKm = avoidRoute?.distanceKm ?? Math.max(1, Math.round(straightKm * 1.3))
     const shortestKm = shortestRoute?.distanceKm ?? Math.max(1, Math.round(straightKm * 1.15))
+    const shortest = {
+      durationMin: shortestRoute?.durationMin ?? Math.max(5, Math.round((shortestKm / 78) * 60)),
+      distanceKm: shortestKm,
+      tunnelCount: tunnels.length, tunnels,
+      path: shortestRoute?.path, maneuvers: shortestRoute?.maneuvers, origin: originPlace, dest: destPlace,
+    }
+
+    const hasTunnel = tunnels.length > 0
+    if (!hasTunnel) {
+      return {
+        hasTunnel: false,
+        avoid: { ...shortest, tunnelCount: 0, tunnels: [], waypoints: [`${originStr} 출발`, `${destStr} 도착`] },
+        shortest,
+      }
+    }
+
+    // 터널 회피 루트 = 터널을 아예 지나지 않는 경로 (옛 고갯길 등으로 우회) — 실제로 지나는 터널이
+    // 있을 때만 계산한다.
+    const avoidRoute = await fetchRoute(routePoints, { excludeTunnels: true })
+    const avoidKm = avoidRoute?.distanceKm ?? Math.max(1, Math.round(straightKm * 1.3))
 
     return {
+      hasTunnel: true,
       avoid: {
         durationMin: avoidRoute?.durationMin ?? Math.max(5, Math.round((avoidKm / 62) * 60)),
         distanceKm: avoidKm, tunnelCount: 0,
         waypoints: [`${originStr} 출발`, `${destStr} 방면 국도·해안도로 경유`],
+        path: avoidRoute?.path, maneuvers: avoidRoute?.maneuvers, origin: originPlace, dest: destPlace,
       },
-      shortest: {
-        durationMin: shortestRoute?.durationMin ?? Math.max(5, Math.round((shortestKm / 78) * 60)),
-        distanceKm: shortestKm,
-        tunnelCount: tunnels.length, tunnels,
-      },
+      shortest,
     }
   } catch {
     return null
@@ -153,9 +178,12 @@ export default function RoutePage() {
     setLoading(true)
     const fixedOrigin = usingCurrentLocation ? originCoords : undefined
     const real = await computeRouteResult(origin.trim(), dest.trim(), { originPlace: fixedOrigin })
-    setResult(real ?? MOCK_RESULT)
+    const finalResult = real ?? MOCK_RESULT
+    setResult(finalResult)
     setLoading(false)
-    setStep('compare')
+    setSelectedRoute('avoid')
+    // 실제로 지나는 터널이 없으면 회피 경로와 최단 경로가 같으므로 비교 화면 없이 바로 상세로 간다.
+    setStep(finalResult.hasTunnel === false ? 'detail' : 'compare')
   }
 
   if (step === 'course') {
@@ -207,9 +235,23 @@ export default function RoutePage() {
         ))}
 
         <button
-          onClick={() => navigate('/navigating', { state: { origin, dest, waypoints } })}
-          style={{ marginTop:20, height:44, borderRadius:11, width:'100%', fontWeight:800, fontSize:13.5, cursor:'pointer', background:'#14807A', color:'#fff' }}>
-          이 코스로 출발하기
+          onClick={async () => {
+            if (loading) return
+            setLoading(true)
+            // 코스도 일반 길찾기와 똑같이 최단 루트/터널 회피 루트를 비교해서 보여주고, 최단 루트를
+            // 고르면 실제로 지나는 터널에서 동반 모드가 뜨도록 한다 — "터널 1개 포함" 태그가 있어도
+            // 예전에는 무조건 회피 루트만 계산해서 동반 모드가 뜰 좌표 자체가 없었다.
+            const real = await computeRouteResult(origin, dest, { waypoints })
+            const finalResult = real ?? MOCK_RESULT
+            setResult(finalResult)
+            setLoading(false)
+            setSelectedRoute('avoid')
+            // 실제로 지나는 터널이 없으면 회피 경로와 최단 경로가 같으므로 비교 화면 없이 바로 상세로 간다.
+            setStep(finalResult.hasTunnel === false ? 'detail' : 'compare')
+          }}
+          disabled={loading}
+          style={{ marginTop:20, height:44, borderRadius:11, width:'100%', fontWeight:800, fontSize:13.5, cursor:'pointer', background:'#14807A', color:'#fff', opacity: loading ? 0.6 : 1 }}>
+          {loading ? '경로 계산 중...' : '이 코스로 출발하기'}
         </button>
       </div>
     )
@@ -330,7 +372,8 @@ export default function RoutePage() {
   return (
     <div style={{ maxWidth:640, margin:'0 auto', padding:'30px 26px 80px' }}>
       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-        <span onClick={() => setStep('compare')} style={{ fontSize:20, color:'#8A98A2', cursor:'pointer' }}>‹</span>
+        {/* 비교할 회피 루트가 없는 경우(hasTunnel: false)에는 compare 단계 자체가 없으므로 입력 화면으로 돌아간다 */}
+        <span onClick={() => setStep(result.hasTunnel === false ? (courseMode ? 'course' : 'input') : 'compare')} style={{ fontSize:20, color:'#8A98A2', cursor:'pointer' }}>‹</span>
         <span style={{ fontSize:14, fontWeight:700 }}>{origin} → {dest}</span>
       </div>
 
@@ -416,6 +459,7 @@ export default function RoutePage() {
             onClick={() => navigate('/navigating', {
               state: {
                 origin, dest, durationMin: route.durationMin, distanceKm: route.distanceKm,
+                waypoints, originPlace: route.origin, destPlace: route.dest,
                 ...(selectedRoute === 'shortest' ? { tunnel: tunnels[0], tunnels } : {}),
               },
             })}

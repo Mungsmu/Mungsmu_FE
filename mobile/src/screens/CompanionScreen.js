@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { View, Text, Pressable, StyleSheet } from 'react-native'
 import { useNavigation, useRoute } from '@react-navigation/native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import * as Location from 'expo-location'
 import MockMap from '../components/MockMap'
 import TunnelBanner from '../components/TunnelBanner'
 import TunnelGauge from '../components/TunnelGauge'
+import TunnelProgressCard from '../components/TunnelProgressCard'
 import { COLORS } from '../theme'
 import { DEFAULT_TUNNEL } from '../data/routeMock'
 import { haversineM, hasKakaoKey, resolvePlace } from '../lib/kakaoRest'
@@ -41,12 +43,10 @@ function fmtMMSS(totalSec) {
 
 export default function CompanionScreen() {
   const nav = useNavigation()
+  const insets = useSafeAreaInsets()
   const params = useRoute().params ?? {}
   const tunnel = params.tunnel ?? DEFAULT_TUNNEL
-  const tunnels = params.tunnels ?? [tunnel]
-  const remainingTunnels = tunnels.slice(1)
-  const { origin, dest, durationMin, distanceKm, waypoints = [], passedTunnels = [], entrySpeedKmh } = params
-  const isTutorial = !dest
+  const { entrySpeedKmh } = params
 
   // phase: 'approach'(10m 전 팝업, 아직 호흡 없음) → 'breathing'(터널 안, 호흡 가이드 진행) → 'done'(튜토리얼 통과 완료, 나가기 대기)
   const [phase, setPhase] = useState('approach')
@@ -61,7 +61,6 @@ export default function CompanionScreen() {
   const [pathResolved, setPathResolved] = useState(false) // 터널 구간 탐색이 끝났는지 — 끝나기 전엔 마커를 아예 안 그려서, "일단 이름으로 찾은 위치" → "실제 터널 구간"으로 지도가 두 번 튀는 걸 막는다
 
   const phaseStartRef = useRef(Date.now())
-  const enterTimeRef = useRef(null)
   const exitWarnedRef = useRef(false)
   const completedRef = useRef(false)
   const demoRouteRef = useRef(null) // { path, cum, totalM } — 주행 카메라가 따라갈 경로
@@ -147,10 +146,7 @@ export default function CompanionScreen() {
   // 1) 접근 단계: 10m 전 팝업 + 음성. 아직 호흡 가이드는 시작하지 않는다.
   useEffect(() => {
     speak('터널 진입 10미터 전입니다. 곧 동반모드가 실행됩니다.')
-    const t = setTimeout(() => {
-      enterTimeRef.current = Date.now()
-      setPhase('breathing')
-    }, APPROACH_MS)
+    const t = setTimeout(() => setPhase('breathing'), APPROACH_MS)
     return () => clearTimeout(t)
   }, [])
 
@@ -187,24 +183,16 @@ export default function CompanionScreen() {
     return () => { cancelled = true; if (tickTimer) clearInterval(tickTimer) }
   }, [phase])
 
+  // 이 화면은 이제 홈 화면 "동반 모드" 버튼으로만 들어오는 튜토리얼 전용이다(실제 여정 중
+  // 터널을 만나면 NavigatingScreen이 화면 전환 없이 자체 오버레이로 처리한다) — 그래서 통과
+  // 완료 후 실제 내비게이션으로 돌아가는 분기는 항상 도달 불가능해 제거했다.
   const finish = () => {
     if (completedRef.current) return
     completedRef.current = true
-    const sec = (Date.now() - (enterTimeRef.current ?? Date.now())) / 1000
     recordTunnelPass().then(() => getMonthlyPassCount()).then(setMonthlyCount)
     speak('터널을 통과하셨습니다.')
     setPct(100)
-    if (isTutorial) {
-      setPhase('done')
-      return
-    }
-    setTimeout(() => {
-      const newPassed = [...passedTunnels, { name: tunnel.name, diff: tunnel.diff, sec }]
-      nav.navigate('Navigating', {
-        origin, dest, durationMin, distanceKm, waypoints,
-        tunnels: remainingTunnels, passedTunnels: newPassed,
-      })
-    }, 1600)
+    setPhase('done')
   }
 
   // 3) 터널 통과 진행률: 실제 이동거리(GPS 델타 누적)를 터널 길이와 비교. 호흡 단계에서만 진행되고,
@@ -342,7 +330,7 @@ export default function CompanionScreen() {
         navPosition={phase !== 'done' ? navPos : null}
         markers={demoMarkers}
       >
-        <View style={styles.topRow}>
+        <View style={[styles.topRow, { top: insets.top + 16 }]}>
           <View style={styles.sharePill}>
             <View style={styles.shareDot} />
             <Text style={styles.shareText}>보호자 김민준 님께 실시간 위치 공유 중</Text>
@@ -353,20 +341,27 @@ export default function CompanionScreen() {
         </View>
 
         {phase === 'approach' ? (
-          <TunnelBanner title="터널 진입 10m 전" subtitle="곧 동반모드가 시작됩니다" />
+          <TunnelBanner title="터널 진입 10m 전" subtitle="곧 동반모드가 시작됩니다" topOffset={insets.top} />
         ) : phase === 'done' ? (
-          <TunnelBanner title="터널을 통과하셨습니다" subtitle="나가기를 눌러 마칠 수 있어요" />
+          <TunnelBanner title="터널을 통과하셨습니다" subtitle="나가기를 눌러 마칠 수 있어요" topOffset={insets.top} />
         ) : exitWarned ? (
-          <TunnelBanner title="터널 통과 10m 전" subtitle="곧 도착해요, 조금만 더 힘내요" />
+          <TunnelBanner title="터널 통과 10m 전" subtitle="곧 도착해요, 조금만 더 힘내요" topOffset={insets.top} />
         ) : (
           <TunnelBanner
             title={guardianState === 'calling' ? '보호자 호출 중...' : '보호자 호출'}
             subtitle={guardianState === 'sent' ? '- 메시지 전송 완료 -' : '탭하여 보호자를 호출해요'}
             onPress={callGuardian}
             disabled={guardianState === 'calling'}
+            topOffset={insets.top}
           />
         )}
         {breathing && <TunnelGauge pct={pct} />}
+        {/* 하단 진행 정보 — 호흡 단계에서만 표시 (웹 CompanionPage.jsx와 동일 카드) */}
+        {breathing && (
+          <View style={styles.bottomWrap}>
+            <TunnelProgressCard name={tunnel.name} pct={pct} />
+          </View>
+        )}
       </MockMap>
     </View>
   )
@@ -379,4 +374,5 @@ const styles = StyleSheet.create({
   shareText: { fontSize: 12, color: '#0E5E58', fontWeight: '700', flexShrink: 1 },
   exitBtn: { marginLeft: 'auto', backgroundColor: '#fff', borderRadius: 99, paddingHorizontal: 14, paddingVertical: 7 },
   exitText: { fontSize: 13, fontWeight: '700', color: COLORS.textSub },
+  bottomWrap: { position: 'absolute', left: 16, right: 16, bottom: 16 },
 })

@@ -2,8 +2,7 @@ import { useState } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator, Alert } from 'react-native'
 import { useNavigation, useRoute } from '@react-navigation/native'
 import * as Location from 'expo-location'
-import MockMap from '../components/MockMap'
-import { COLORS, RADIUS, SHADOW_MD } from '../theme'
+import { COLORS, RADIUS } from '../theme'
 import { RECENT, MOCK_RESULT, computeRouteResult } from '../data/routeMock'
 import { reverseGeocode } from '../lib/kakaoRest'
 import { getCurrentPosition } from '../lib/geolocation'
@@ -56,17 +55,19 @@ export default function RouteInputScreen() {
     const fixedOrigin = usingCurrentLocation ? originCoords : undefined
     const result = (await computeRouteResult(origin, dest, { originPlace: fixedOrigin })) ?? MOCK_RESULT
     setLoading(false)
-    nav.navigate('RouteCompare', { origin, dest, result })
+    // 실제로 지나는 터널이 없으면 회피 경로와 최단 경로가 같으므로 비교 화면 없이 바로 상세로 간다.
+    if (result.hasTunnel === false) nav.navigate('RouteDetail', { origin, dest, result, selectedRoute: 'avoid' })
+    else nav.navigate('RouteCompare', { origin, dest, result })
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ padding: 20 }}>
+    // keyboardShouldPersistTaps가 기본값(never)이면, 키보드가 떠 있는 상태에서 자동완성
+    // 드롭다운 항목을 탭해도 ScrollView가 그 첫 탭을 "키보드 닫기"로만 소비하고 항목의
+    // onPress에는 전달하지 않는다 — 그래서 드롭다운 위치명이 안 눌리고, 매번 한 번 더
+    // 탭해야 하는 것처럼 느껴진다("자꾸 튕기는" 느낌의 원인).
+    <ScrollView style={styles.container} contentContainerStyle={{ padding: 20 }} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>안심 경로 길찾기</Text>
       <Text style={styles.subtitle}>출발지와 목적지를 입력하면 터널 회피 경로와 최단 경로를 비교해드려요.</Text>
-
-      <View style={styles.mapPreview}>
-        <MockMap />
-      </View>
 
       <View style={styles.inputBox}>
         <PlaceAutocompleteInput value={origin} onChange={handleOriginChange} placeholder="서울 (출발)" dotColor={COLORS.primary} recent={RECENT} />
@@ -101,7 +102,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bgPage },
   title: { fontSize: 24, fontWeight: '800', color: COLORS.textHead, marginBottom: 6 },
   subtitle: { fontSize: 13.5, color: COLORS.textSub, marginBottom: 18, lineHeight: 19 },
-  mapPreview: { height: 140, borderRadius: RADIUS.lg, overflow: 'hidden', marginBottom: 16, ...SHADOW_MD },
   // zIndex를 줘서 얘가 독립된 쌓임 맥락(stacking context)을 갖게 한다 — 안 그러면 내부 자동완성
   // 드롭다운의 zIndex가 바깥의 검색 버튼·최근 검색 목록(둘 다 zIndex 없음)에는 안 먹혀서, 드롭다운이
   // 그 위로 제대로 안 뜨고 화면 아래쪽 요소들과 겹쳐 보인다.

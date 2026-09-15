@@ -4,6 +4,7 @@ import { TUNNELS } from '../data/mock.js'
 import MockStreetMap from '../components/MockStreetMap.jsx'
 import TunnelBanner from '../components/TunnelBanner.jsx'
 import TunnelGauge from '../components/TunnelGauge.jsx'
+import TunnelProgressCard from '../components/TunnelProgressCard.jsx'
 import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
 import { cumulativeDistM, fetchRoute, traceTunnels } from '../lib/route.js'
 import { speak } from '../lib/speech.js'
@@ -34,10 +35,7 @@ export default function CompanionPage() {
   const nav = useNavigate()
   const state = useLocation().state ?? {}
   const tunnel = state.tunnel ?? DEFAULT_TUNNEL
-  const tunnels = state.tunnels ?? [tunnel]
-  const remainingTunnels = tunnels.slice(1)
-  const { origin, dest, durationMin, distanceKm, waypoints = [], passedTunnels = [], entrySpeedKmh } = state
-  const isTutorial = !dest // 헤더의 "동반 모드" 버튼으로 들어온 경우 — 실제 여정이 없으니 호흡 연습용
+  const { entrySpeedKmh } = state
 
   // phase: 'approach'(10m 전 팝업, 아직 호흡 없음) → 'breathing'(터널 안, 호흡 가이드 진행)
   const [phase, setPhase] = useState('approach')
@@ -49,7 +47,6 @@ export default function CompanionPage() {
   const [navPos, setNavPos] = useState(null) // { lat, lng, heading, zoom } — 경로 위 주행 카메라 위치
   const [tunnelPath, setTunnelPath] = useState(null) // [[lat,lng],...] 검증된 실제 터널 구간. 없으면 주행 카메라 미표시
 
-  const enterTimeRef = useRef(null)
   const phaseStartRef = useRef(Date.now())
   const exitWarnedRef = useRef(false)
   const demoRouteRef = useRef(null) // { path, cum, totalM } — 주행 카메라가 따라갈 경로
@@ -124,10 +121,7 @@ export default function CompanionPage() {
   //  첫 호출과 두 번째 호출의 음성이 겹쳐서 씹히는 것처럼 들린다.)
   useEffect(() => {
     speak('터널 진입 10미터 전입니다. 곧 동반모드가 실행됩니다.')
-    const t = setTimeout(() => {
-      enterTimeRef.current = Date.now()
-      setPhase('breathing')
-    }, APPROACH_MS)
+    const t = setTimeout(() => setPhase('breathing'), APPROACH_MS)
     return () => {
       clearTimeout(t)
       window.speechSynthesis?.cancel()
@@ -167,24 +161,17 @@ export default function CompanionPage() {
     return () => { cancelled = true; if (tickTimer) clearInterval(tickTimer) }
   }, [phase])
 
+  // 이 페이지는 이제 헤더 "동반 모드" 버튼으로만 들어오는 튜토리얼 전용이다(실제 여정 중 터널을
+  // 만나면 NavigatingPage가 페이지 전환 없이 자체 오버레이로 처리한다) — 그래서 통과 완료 후 실제
+  // 내비게이션으로 돌아가는 분기는 항상 도달 불가능해 제거했다. 튜토리얼은 실제 여정이 없으니
+  // 자동으로 화면을 넘기지 않고, 사용자가 직접 "나가기"를 눌러야 끝난다.
   const finish = () => {
     if (completedRef.current) return
     completedRef.current = true
-    const sec = (Date.now() - (enterTimeRef.current ?? Date.now())) / 1000
     recordTunnelPass()
     speak('터널을 통과하셨습니다.')
     setPct(100)
-    if (isTutorial) {
-      // 튜토리얼은 실제 여정이 없으니 자동으로 화면을 넘기지 않고, 사용자가 직접 "나가기"를 눌러야 끝난다.
-      setPhase('done')
-      return
-    }
-    setTimeout(() => {
-      const newPassed = [...passedTunnels, { name: tunnel.name, diff: tunnel.diff, sec }]
-      nav('/navigating', {
-        state: { origin, dest, durationMin, distanceKm, waypoints, tunnels: remainingTunnels, passedTunnels: newPassed },
-      })
-    }, 1600)
+    setPhase('done')
   }
 
   // 3) 터널 통과 진행률: 실제 이동거리(GPS)를 터널 길이와 비교해서 계산.
@@ -358,15 +345,7 @@ export default function CompanionPage() {
         {/* 하단 진행 정보 — 호흡 단계에서만 표시 */}
         {breathing && (
           <div style={{ position:'absolute', left:16, right:16, bottom:16, pointerEvents:'auto' }}>
-            <div style={{ background:'#fff', borderRadius:14, padding:'13px 16px', boxShadow:'0 6px 20px rgba(20,40,60,.12)' }}>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-                <span style={{ fontSize:12.5, fontWeight:700, color:'#16242E' }}>{tunnel.name} 통과 중</span>
-                <span style={{ fontSize:12.5, color:'#5B6C78' }}>{pct >= 100 ? '통과 완료' : `${Math.round(pct)}% 통과`}</span>
-              </div>
-              <div style={{ height:6, borderRadius:99, background:'#E4EAEF', overflow:'hidden', marginTop:8 }}>
-                <div style={{ height:'100%', width:`${pct}%`, background:'linear-gradient(90deg,#1E9E94,#0E5E58)', borderRadius:99, transition:'width .3s linear' }} />
-              </div>
-            </div>
+            <TunnelProgressCard name={tunnel.name} pct={pct} />
           </div>
         )}
       </MockStreetMap>

@@ -2,11 +2,13 @@ import { View, Text, Pressable, StyleSheet } from 'react-native'
 
 // 지도 화면 상단 팝업 배너 — 터널 진입 전 / 보호자 호출 / 통과 완료 메시지에 공통 사용.
 // onPress를 주면 보호자 호출 버튼처럼 누를 수 있는 배너로 동작한다.
-export default function TunnelBanner({ title, subtitle, onPress, disabled }) {
+// topOffset: 노치·다이나믹 아일랜드가 있는 기기에서 상단 안전영역(safe area)만큼 더 내려야 할 때
+// 화면(NavigatingScreen 등)에서 insets.top을 넘겨준다.
+export default function TunnelBanner({ title, subtitle, onPress, disabled, topOffset = 0 }) {
   if (!title) return null
   const Wrap = onPress ? Pressable : View
   return (
-    <Wrap style={[styles.banner, disabled && { opacity: 0.7 }]} onPress={onPress} disabled={disabled} pointerEvents={onPress ? 'auto' : 'none'}>
+    <Wrap style={[styles.banner, { top: 64 + topOffset }, disabled && { opacity: 0.7 }]} onPress={onPress} disabled={disabled} pointerEvents={onPress ? 'auto' : 'none'}>
       <Text style={styles.title}>{title}</Text>
       {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
     </Wrap>

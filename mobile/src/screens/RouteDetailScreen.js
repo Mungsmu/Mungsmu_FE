@@ -10,14 +10,14 @@ const TUNNEL_PREVIEW_MAX = 3
 
 export default function RouteDetailScreen() {
   const nav = useNavigation()
-  const { origin, dest, selectedRoute, result: fullResult = MOCK_RESULT } = useRoute().params
+  const { origin, dest, selectedRoute, result: fullResult = MOCK_RESULT, waypoints = [] } = useRoute().params
   const isAvoid = selectedRoute === 'avoid'
   const result = fullResult[selectedRoute]
   const tunnels = result.tunnels?.length ? result.tunnels : (isAvoid ? [] : [DEFAULT_TUNNEL])
 
   const start = () => nav.navigate('Navigating', {
     origin, dest, durationMin: result.durationMin, distanceKm: result.distanceKm,
-    waypoints: isAvoid ? fullResult.avoid.waypoints : [],
+    waypoints,
     path: result.path, maneuvers: result.maneuvers,
     originPlace: result.origin, destPlace: result.dest,
     ...(isAvoid ? {} : { tunnels }),
