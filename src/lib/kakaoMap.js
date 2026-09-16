@@ -29,21 +29,41 @@ export function keywordSearch(kakao, keyword) {
   })
 }
 
-// 장소명 → 좌표. 같은 이름을 반복 검색하지 않도록 모듈 전역 캐시.
-// 정확한 이름으로 결과가 없으면(예: "청초호 수변공원"은 POI로 안 잡히지만 "청초호"는 잡힘)
-// 뒤 단어부터 하나씩 줄여가며 재시도한다.
+// 주소·행정구역명 → 좌표 (카카오맵 Geocoder). 해당 없으면 null.
+export function addressSearch(kakao, query) {
+  return new Promise(resolve => {
+    if (!query?.trim()) { resolve(null); return }
+    const geocoder = new kakao.maps.services.Geocoder()
+    geocoder.addressSearch(query, (data, status) => {
+      if (status !== kakao.maps.services.Status.OK || !data[0]) { resolve(null); return }
+      resolve({ lat: Number(data[0].y), lng: Number(data[0].x), name: data[0].address_name, address: data[0].address_name })
+    })
+  })
+}
+
+// 장소명·주소 → 좌표. 같은 이름을 반복 검색하지 않도록 모듈 전역 캐시.
+//
+// 주소 검색을 먼저 시도한다. 키워드 검색은 인기 POI 순으로 결과를 주기 때문에 "홍천" 같은
+// 지명을 넣으면 홍천군이 아니라 비발디파크 오션월드가 1순위로 잡혀 출발지가 수십 km 어긋나고,
+// 그 결과 전혀 다른 경로가 나왔다(실측 확인 — 홍천→속초가 서울 근교 터널을 지나는 경로로 잡힘).
+// 주소로 안 잡히는 장소명("속초 해수욕장" 등)만 키워드 검색으로 넘긴다.
 const placeCache = new Map()
 export async function resolvePlace(kakao, query) {
   if (!query) return null
   if (placeCache.has(query)) return placeCache.get(query)
 
-  const words = query.trim().split(/\s+/)
-  let hit = null
-  for (let n = words.length; n > 0 && !hit; n--) {
-    const data = await keywordSearch(kakao, words.slice(0, n).join(' '))
-    hit = data[0]
+  let result = await addressSearch(kakao, query.trim())
+  if (!result) {
+    // 정확한 이름으로 결과가 없으면(예: "청초호 수변공원"은 POI로 안 잡히지만 "청초호"는 잡힘)
+    // 뒤 단어부터 하나씩 줄여가며 재시도한다.
+    const words = query.trim().split(/\s+/)
+    let hit = null
+    for (let n = words.length; n > 0 && !hit; n--) {
+      const data = await keywordSearch(kakao, words.slice(0, n).join(' '))
+      hit = data[0]
+    }
+    result = hit ? { lat: Number(hit.y), lng: Number(hit.x), name: hit.place_name, address: hit.road_address_name || hit.address_name || '' } : null
   }
-  const result = hit ? { lat: Number(hit.y), lng: Number(hit.x), name: hit.place_name, address: hit.road_address_name || hit.address_name || '' } : null
   placeCache.set(query, result)
   return result
 }

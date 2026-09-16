@@ -53,6 +53,22 @@ async function photonReverse({ lat, lng }) {
   }
 }
 
+// 주소·행정구역명 → 좌표 (카카오 Local 주소 검색). 해당 없으면 null.
+export async function addressSearch(query) {
+  if (!KAKAO_REST_KEY || !query?.trim()) return null
+  try {
+    const res = await fetch(`https://dapi.kakao.com/v2/local/search/address.json?query=${encodeURIComponent(query)}`, {
+      headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` },
+    })
+    if (!res.ok) return null
+    const hit = (await res.json()).documents?.[0]
+    if (!hit) return null
+    return { lat: Number(hit.y), lng: Number(hit.x), name: hit.address_name, address: hit.address_name }
+  } catch {
+    return null
+  }
+}
+
 export async function keywordSearch(query) {
   if (!KAKAO_REST_KEY || !query) return []
   try {
@@ -75,17 +91,22 @@ export async function resolvePlace(query) {
 
   let result = null
   if (KAKAO_REST_KEY) {
-    // 정확한 이름으로 결과가 없으면(예: "청초호 수변공원"은 POI로 안 잡히지만 "청초호"는 잡힘)
-    // 뒤 단어부터 하나씩 줄여가며 재시도한다.
-    const words = query.trim().split(/\s+/)
-    let hit = null
-    for (let n = words.length; n > 0 && !hit; n--) {
-      const data = await keywordSearch(words.slice(0, n).join(' '))
-      hit = data[0]
+    // 주소 검색을 먼저 시도한다. 키워드 검색은 인기 POI 순으로 결과를 주기 때문에 "홍천" 같은
+    // 지명이 홍천군이 아니라 비발디파크 오션월드로 잡혀 출발지가 수십 km 어긋났다(실측 확인).
+    result = await addressSearch(query.trim())
+    if (!result) {
+      // 정확한 이름으로 결과가 없으면(예: "청초호 수변공원"은 POI로 안 잡히지만 "청초호"는 잡힘)
+      // 뒤 단어부터 하나씩 줄여가며 재시도한다.
+      const words = query.trim().split(/\s+/)
+      let hit = null
+      for (let n = words.length; n > 0 && !hit; n--) {
+        const data = await keywordSearch(words.slice(0, n).join(' '))
+        hit = data[0]
+      }
+      result = hit
+        ? { lat: Number(hit.y), lng: Number(hit.x), name: hit.place_name, address: hit.road_address_name || hit.address_name || '' }
+        : null
     }
-    result = hit
-      ? { lat: Number(hit.y), lng: Number(hit.x), name: hit.place_name, address: hit.road_address_name || hit.address_name || '' }
-      : null
   } else {
     result = await photonSearch(query.trim())
   }
