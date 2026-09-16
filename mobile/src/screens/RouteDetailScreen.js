@@ -18,8 +18,10 @@ export default function RouteDetailScreen() {
   const start = () => nav.navigate('Navigating', {
     origin, dest, durationMin: result.durationMin, distanceKm: result.distanceKm,
     waypoints,
-    path: result.path, maneuvers: result.maneuvers,
+    path: result.path, maneuvers: result.maneuvers, shapes: result.shapes,
     originPlace: result.origin, destPlace: result.dest,
+    // 내비가 같은 성격의 경로를 달리도록 선택값을 그대로 넘긴다
+    routeProfile: isAvoid ? 'avoid' : 'shortest',
     ...(isAvoid ? {} : { tunnels }),
   })
 

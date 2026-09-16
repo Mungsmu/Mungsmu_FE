@@ -83,7 +83,8 @@ export async function computeRouteResult(originStr, destStr, { originPlace: fixe
       durationMin: shortestRoute?.durationMin ?? Math.max(5, Math.round((shortestKm / 78) * 60)),
       distanceKm: shortestKm,
       tunnelCount: tunnels.length, tunnelNames: tunnels.map(t => t.name), tunnels,
-      path: shortestRoute?.path, maneuvers: shortestRoute?.maneuvers, origin: originPlace, dest: destPlace,
+      // shapes를 함께 넘겨야 내비게이션 화면이 이 경로의 터널 구간을 다시 실측할 수 있다
+      path: shortestRoute?.path, maneuvers: shortestRoute?.maneuvers, shapes: shortestRoute?.shapes, origin: originPlace, dest: destPlace,
     }
 
     const hasTunnel = tunnels.length > 0
@@ -108,7 +109,7 @@ export async function computeRouteResult(originStr, destStr, { originPlace: fixe
         durationMin: avoidRoute?.durationMin ?? Math.max(5, Math.round((avoidKm / 62) * 60)),
         distanceKm: avoidKm, tunnelCount: 0,
         waypoints: [`${originStr} 출발`, `${destStr} 방면 국도·해안도로 경유`],
-        path: avoidRoute?.path, maneuvers: avoidRoute?.maneuvers, origin: originPlace, dest: destPlace,
+        path: avoidRoute?.path, maneuvers: avoidRoute?.maneuvers, shapes: avoidRoute?.shapes, origin: originPlace, dest: destPlace,
       },
       shortest,
     }

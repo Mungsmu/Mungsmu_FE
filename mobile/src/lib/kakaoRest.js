@@ -1,6 +1,57 @@
-// 카카오 Local REST API로 장소 검색·지오코딩 (모바일은 JS SDK가 아니라 REST API 키를 쓴다).
-// 키가 없으면 null을 반환해서 호출부가 목업 값으로 조용히 대체하도록 한다.
+// 장소 검색·지오코딩 (모바일은 지도 JS SDK가 아니라 REST API를 쓴다).
+//
+// 1순위는 카카오 Local REST API다 — 한국 POI 정확도가 가장 좋다.
+// 다만 REST 키가 없으면(웹으로 띄워보는 경우처럼 아직 키를 안 넣었을 때) 앱 전체가 목업 값으로
+// 떨어져 실제 경로·터널 기능을 전혀 확인할 수 없었다. 그래서 키가 없을 때는 Photon(Komoot이
+// 운영하는 OSM 기반 지오코더)으로 대체한다 — 키가 필요 없고 브라우저에서 바로 호출된다.
+// (Nominatim도 검토했지만 브라우저 요청을 차단해 CORS 에러가 나서 쓸 수 없었다.)
 const KAKAO_REST_KEY = process.env.EXPO_PUBLIC_KAKAO_REST_KEY
+
+const PHOTON = 'https://photon.komoot.io'
+const KR_BBOX = '124,33,132,39' // 대한민국 대략 경계(minLon,minLat,maxLon,maxLat) — 동명 지명이 해외로 잡히는 걸 막는다
+
+// 공개 데모 서버라 과도한 연속 호출을 피하려고 요청을 짧은 간격으로 줄 세운다.
+let photonGate = Promise.resolve()
+function photonTurn() {
+  const mine = photonGate.then(() => new Promise(r => setTimeout(r, 250)))
+  photonGate = mine
+  return mine
+}
+
+// Photon 결과 properties → "강원특별자치도 속초시 청호동" 형태의 주소 문자열
+function photonAddress(pr = {}) {
+  return [pr.state, pr.city ?? pr.county, pr.district ?? pr.locality, pr.street, pr.housenumber]
+    .filter(Boolean).join(' ') || null
+}
+
+async function photonSearch(query) {
+  try {
+    await photonTurn()
+    const res = await fetch(`${PHOTON}/api/?q=${encodeURIComponent(query)}&limit=1&bbox=${KR_BBOX}`)
+    if (!res.ok) return null
+    const hit = (await res.json())?.features?.[0]
+    if (!hit?.geometry?.coordinates) return null
+    const [lng, lat] = hit.geometry.coordinates
+    return {
+      lat: Number(lat), lng: Number(lng),
+      name: hit.properties?.name ?? query,
+      address: photonAddress(hit.properties) ?? '',
+    }
+  } catch {
+    return null
+  }
+}
+
+async function photonReverse({ lat, lng }) {
+  try {
+    await photonTurn()
+    const res = await fetch(`${PHOTON}/reverse?lat=${lat}&lon=${lng}`)
+    if (!res.ok) return null
+    return photonAddress((await res.json())?.features?.[0]?.properties)
+  } catch {
+    return null
+  }
+}
 
 export async function keywordSearch(query) {
   if (!KAKAO_REST_KEY || !query) return []
@@ -21,15 +72,23 @@ const placeCache = new Map()
 export async function resolvePlace(query) {
   if (!query) return null
   if (placeCache.has(query)) return placeCache.get(query)
-  const words = query.trim().split(/\s+/)
-  let hit = null
-  for (let n = words.length; n > 0 && !hit; n--) {
-    const data = await keywordSearch(words.slice(0, n).join(' '))
-    hit = data[0]
+
+  let result = null
+  if (KAKAO_REST_KEY) {
+    // 정확한 이름으로 결과가 없으면(예: "청초호 수변공원"은 POI로 안 잡히지만 "청초호"는 잡힘)
+    // 뒤 단어부터 하나씩 줄여가며 재시도한다.
+    const words = query.trim().split(/\s+/)
+    let hit = null
+    for (let n = words.length; n > 0 && !hit; n--) {
+      const data = await keywordSearch(words.slice(0, n).join(' '))
+      hit = data[0]
+    }
+    result = hit
+      ? { lat: Number(hit.y), lng: Number(hit.x), name: hit.place_name, address: hit.road_address_name || hit.address_name || '' }
+      : null
+  } else {
+    result = await photonSearch(query.trim())
   }
-  const result = hit
-    ? { lat: Number(hit.y), lng: Number(hit.x), name: hit.place_name, address: hit.road_address_name || hit.address_name || '' }
-    : null
   placeCache.set(query, result)
   return result
 }
@@ -37,7 +96,7 @@ export async function resolvePlace(query) {
 // 좌표 → 주소 문자열. "현재 위치에서 출발" 버튼이 GPS로 얻은 좌표를 사람이 읽을 수 있는
 // 주소로 보여주는 데 쓴다. 실패하면 null — 호출부가 "현재 위치"라는 라벨로 대체한다.
 export async function reverseGeocode({ lat, lng }) {
-  if (!KAKAO_REST_KEY) return null
+  if (!KAKAO_REST_KEY) return photonReverse({ lat, lng })
   try {
     const res = await fetch(`https://dapi.kakao.com/v2/local/geo/coord2address.json?x=${lng}&y=${lat}`, {
       headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` },
@@ -61,4 +120,8 @@ export function haversineM(a, b) {
   return 2 * R * Math.asin(Math.sqrt(s))
 }
 
-export const hasKakaoKey = !!KAKAO_REST_KEY
+// 장소 검색이 가능한지 — 카카오 키가 있거나, 없으면 Photon 폴백이 있으므로 항상 true다.
+// (이름은 기존 호출부 호환을 위해 유지한다. 지도 SDK 키 유무와는 별개다.)
+export const hasKakaoKey = true
+// 실제로 카카오 REST 키를 쓰고 있는지 — 정확도 안내 문구 등에 쓸 수 있다.
+export const usingKakaoGeocoder = !!KAKAO_REST_KEY
