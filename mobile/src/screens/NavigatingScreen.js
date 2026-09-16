@@ -29,6 +29,11 @@ const TUNNEL_APPROACH_M = 400  // 이 거리(m) 안으로 들어오면 상단에
 const TUNNEL_ANNOUNCE_M = 200  // 이 거리(m)에서 "잠시 후 진입" 음성 안내 + 동반 모드 준비 단계 시작
 const DEMO_SPEED_MPS = 140
 const ON_ROUTE_MAX_M = 250
+const OFF_ROUTE_STRIKES = 3      // 연속 이 횟수만큼 경로 밖으로 잡혀야 재탐색한다 (튄 신호 한 번으로 돌지 않게)
+const GPS_ACCURACY_MAX_M = 120  // 이보다 부정확한 신호는 버린다 (터널 출구·도심에서 흔히 크게 튄다)
+const TUNNEL_GPS_GRACE_MS = 15000 // 터널을 빠져나온 뒤 이 시간 동안은 GPS를 신뢰하지 않는다
+const GPS_REWIND_MAX_M = 200 // GPS 스냅이 이보다 많이 뒤로 가면 노이즈로 보고 버린다(경로 되감기 방지)
+const PROGRESS_STALL_MS = 6000 // 경로상 진행이 이 시간 동안 없으면 추측항법이 이어받는다
 const HAZARD_LOOKAHEAD_M = 1200
 const HAZARD_SEEDS = [
   { type: '단속', frac: 0.16, speed: 80 },
@@ -92,6 +97,9 @@ export default function NavigatingScreen() {
   // 경로가 실제로 지나는 터널 [{ id, name, lengthM, diff, startM, endM, announced, entered, passed, dismissed }]
   // startM/endM은 경로상 누적거리(m) — 진입·통과 판정의 유일한 기준이다. startM 오름차순.
   const routeTunnelsRef = useRef([])
+  const inTunnelRef = useRef(false)      // 지금 터널 안인지 — 터널 안에서는 GPS 대신 추측항법으로 달린다
+  const tunnelExitAtRef = useRef(0)      // 마지막으로 터널을 빠져나온 시각(ms)
+  const offRouteStrikesRef = useRef(0)   // 연속으로 경로 밖에 잡힌 횟수
   const routeRef = useRef(null) // { path, cum, totalM, maneuvers, durationMin }
   const traveledRef = useRef(0)
   const gpsLiveRef = useRef(false) // GPS로 뭐라도(경로 위 실측이든 폴백 진행률이든) 추적 중 — 데모 주행 일시정지·정지 감지에만 쓴다
@@ -175,6 +183,8 @@ export default function NavigatingScreen() {
     reroutingRef.current = true
     setRerouting(true)
     gpsLiveRef.current = false
+    inTunnelRef.current = false
+    offRouteStrikesRef.current = 0
     traveledRef.current = 0
     lastSpokenManRef.current = null
     setNavState(null)
@@ -238,10 +248,13 @@ export default function NavigatingScreen() {
       if (t.passed) continue
       if (traveledM >= t.endM) {                 // 출구 통과
         t.passed = true
+        inTunnelRef.current = false
+        tunnelExitAtRef.current = Date.now()
         if (t.entered && !t.dismissed) finishTunnel(t)
         continue
       }
       if (traveledM >= t.startM) {               // 터널 안
+        inTunnelRef.current = true
         if (!t.entered) {
           t.entered = true
           if (!t.dismissed) beginBreathing(t)
@@ -315,7 +328,10 @@ export default function NavigatingScreen() {
     const TICK_MS = 500
     const t = setInterval(() => {
       const r = routeRef.current
-      if (!r || gpsLiveRef.current || reroutingRef.current) return
+      if (!r || reroutingRef.current) return
+      // 터널 안에서는 GPS가 끊기거나 크게 튄다 — GPS 상태와 무관하게 즉시 추측항법으로 이어
+      // 달린다. 예전에는 정지 감지 타이머가 gpsLiveRef를 꺼줄 때까지 6초 동안 화면이 멈췄다.
+      if (gpsLiveRef.current && !inTunnelRef.current) return
       // 터널 안에서는 실제 주행 속도로 움직인다 — 통과 시간이 "터널 길이 ÷ 속도"와 맞아야
       // 동반 모드가 입구~출구 구간에서만 정확히 유지된다.
       const inTun = routeTunnelsRef.current.some(t => t.entered && !t.passed)
@@ -338,6 +354,7 @@ export default function NavigatingScreen() {
     let startDist = null
     let lastRemain = null
     let lastMoveAt = Date.now()
+    let lastProgressM = 0 // 마지막으로 '앞으로 나간' 경로상 거리 — 좌표만 흔들릴 때를 정지로 본다
 
     ;(async () => {
       const { status } = await Location.requestForegroundPermissionsAsync()
@@ -349,6 +366,10 @@ export default function NavigatingScreen() {
         { accuracy: Location.Accuracy.High, timeInterval: 3000, distanceInterval: 1 },
         pos => {
           setSignalLost(false)
+          // 터널 안이거나 빠져나온 직후에는 GPS를 믿지 않는다 — 추측항법이 계속 이어간다.
+          if (inTunnelRef.current || Date.now() - tunnelExitAtRef.current < TUNNEL_GPS_GRACE_MS) return
+          // 정확도가 크게 나쁜 신호는 버린다
+          if (pos.coords.accuracy != null && pos.coords.accuracy > GPS_ACCURACY_MAX_M) return
           const here = { lat: pos.coords.latitude, lng: pos.coords.longitude }
           const r = routeRef.current
           if (r) {
@@ -358,15 +379,31 @@ export default function NavigatingScreen() {
               if (d < bestD) { bestD = d; best = i }
             }
             if (bestD <= ON_ROUTE_MAX_M) {
+              offRouteStrikesRef.current = 0
               gpsLiveRef.current = true
               onRouteRef.current = true
               setGpsActive(true)
-              lastMoveAt = Date.now()
-              updateNav(r.cum[best])
+              // 경로 위 진행은 앞으로만 간다. GPS가 조금만 흔들려도 가까운 경로점이 뒤쪽으로 잡히는
+              // 일이 잦은데, 그대로 받아들이면 주행이 통째로 출발지까지 되감긴다.
+              const snappedM = r.cum[best]
+              if (snappedM < traveledRef.current - GPS_REWIND_MAX_M) return
+              // '움직였다'는 판정도 좌표 흔들림이 아니라 경로상 전진으로만 센다 — 그래야 제자리에서
+              // 신호만 떨릴 때 정지로 감지돼 추측항법이 이어받는다(멈춰 보이던 원인).
+              if (snappedM > lastProgressM + 5) { lastProgressM = snappedM; lastMoveAt = Date.now() }
+              updateNav(Math.max(snappedM, traveledRef.current))
               return
             }
             // "경로 위에 실제로 있어본 적이 있는데" 지금 멀어졌을 때만 이탈로 보고 재탐색한다.
-            if (onRouteRef.current) { onRouteRef.current = false; reroute(here); return }
+            // 한 번 튄 값으로는 재탐색하지 않는다 — 터널 출구에서 GPS가 크게 튀면 그 한 번으로
+            // 재탐색이 돌면서 주행이 출발지로 초기화됐다(실측된 버그).
+            if (onRouteRef.current) {
+              offRouteStrikesRef.current += 1
+              if (offRouteStrikesRef.current < OFF_ROUTE_STRIKES) return
+              offRouteStrikesRef.current = 0
+              onRouteRef.current = false
+              reroute(here)
+              return
+            }
           }
           if (!place) return
           const remain = haversineM(here, place)
@@ -386,7 +423,7 @@ export default function NavigatingScreen() {
         },
       )
       stallTimer = setInterval(() => {
-        if (gpsLiveRef.current && Date.now() - lastMoveAt > 6000) {
+        if (gpsLiveRef.current && Date.now() - lastMoveAt > PROGRESS_STALL_MS) {
           gpsLiveRef.current = false
           onRouteRef.current = false
           setGpsActive(false)
