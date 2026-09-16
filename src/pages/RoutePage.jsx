@@ -460,7 +460,10 @@ export default function RoutePage() {
               state: {
                 origin, dest, durationMin: route.durationMin, distanceKm: route.distanceKm,
                 waypoints, originPlace: route.origin, destPlace: route.dest,
-                ...(selectedRoute === 'shortest' ? { tunnel: tunnels[0], tunnels } : {}),
+                // 내비가 같은 성격의 경로를 달리도록 선택값을 그대로 넘긴다. 터널 목록은 내비가
+                // 실제 주행 경로에서 다시 실측하므로(경유지·재탐색으로 달라질 수 있다) 참고용이다.
+                routeProfile: selectedRoute,
+                ...(selectedRoute === 'shortest' ? { tunnels } : {}),
               },
             })}
             style={{

@@ -47,6 +47,33 @@ export function nearestGangwonTunnel(point, maxM = 300) {
 //   ② tunnel 객체 자체에 startLat/startLng가 있으면(이 데이터셋으로 이미 보강된 경우) 그대로
 //   ③ 이름으로 이 데이터셋에서 찾는다
 // 셋 다 실패하면 null — 호출부가 지오코딩(장소명 검색) 폴백을 쓰도록 한다.
+// 동반 모드(터널 도우미)를 자동으로 띄우는 최소 터널 길이(m). 이보다 짧은 터널은 눈 깜짝할 새에
+// 지나가서 호흡 가이드를 시작할 시간도 안 되므로, 배너·음성 안내만 하고 그냥 통과한다.
+export const COMPANION_MIN_M = 500
+
+// 강원도 데이터셋에 없는 터널(경기·서울 구간 등)의 공황 난이도(1~5) 추정 — 길이가 길수록
+// 갇힌 느낌이 커진다는 단순 기준. 데이터셋에서 찾아지면 그쪽 diff를 우선한다.
+export function estimateDiff(lengthM) {
+  if (lengthM >= 6000) return 5
+  if (lengthM >= 3000) return 4
+  if (lengthM >= 1000) return 3
+  if (lengthM >= 500) return 2
+  return 1
+}
+
+// traceTunnels 구간({ names })에 사람이 읽을 이름을 붙인다. names[0]에는 OSM tunnel:name(실제
+// 터널 이름)이 들어오지만, 없으면 도로명·노선번호로 폴백한다.
+export function tunnelDisplayName(seg) {
+  const names = seg?.names ?? []
+  return names.find(n => n?.includes('터널'))
+    ?? (names.find(n => n && !/^\d+$/.test(n)) ? `${names.find(n => n && !/^\d+$/.test(n))} 터널` : null)
+    ?? (names[0] ? `${names[0]}번 도로 터널` : '터널 구간')
+}
+
+export function formatTunnelLength(lengthM) {
+  return lengthM >= 1000 ? `${(lengthM / 1000).toFixed(1)}km` : `${Math.round(lengthM)}m`
+}
+
 export function resolveTunnelEndpoints(tunnel) {
   if (!tunnel) return null
   if (tunnel.path?.length >= 2) {

@@ -113,44 +113,94 @@ export async function fetchRoute(points, { avoidHighways = false, excludeTunnels
   }
 }
 
+const traceCache = new Map()
+
 /**
  * 경로가 실제로 지나는 터널 구간 목록 (Valhalla trace_attributes — OSM 터널 태그 기반).
  * @param shapes fetchRoute 결과의 shapes (leg별 인코딩 좌표)
- * @returns [{ names: string[], lengthM, begin, end }] 인접 터널 엣지를 구간으로 병합한 목록. 실패 시 null.
- *   begin/end는 해당 leg의 shape 인덱스 — 경유지 없는 단일 leg 경로에서는 fetchRoute() 결과의 path 인덱스와 그대로 일치한다.
+ * @returns [{ names, lengthM, begin, end, beginIdx, endIdx, path }] 실패 시 null.
+ *   begin/end : 해당 leg 안의 shape 인덱스 (leg마다 0부터 다시 시작)
+ *   beginIdx/endIdx : fetchRoute() 결과 path 배열 기준 전역 인덱스. 누적거리 테이블(cumulativeDistM)과
+ *     맞물려 "터널 입구까지 경로상 남은 거리"를 구하는 데 쓴다 — 내비의 터널 진입·통과 판정 기준.
+ *   names[0]에는 가능하면 OSM tunnel:name(실제 터널 이름)이 들어간다.
  */
 export async function traceTunnels(shapes) {
   if (!shapes?.length) return null
+  const cacheKey = shapes.join('|')
+  if (traceCache.has(cacheKey)) return traceCache.get(cacheKey)
   try {
     const segs = []
+    let offset = 0 // 앞 leg들의 좌표 수 — leg 로컬 인덱스를 전역 path 인덱스로 옮길 때 더한다
     for (const shape of shapes) {
+      const pts = decodePolyline6(shape)
       const res = await fetch('https://valhalla1.openstreetmap.de/trace_attributes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           encoded_polyline: shape, costing: 'auto', shape_match: 'edge_walk',
-          filters: { attributes: ['edge.tunnel', 'edge.length', 'edge.names', 'edge.begin_shape_index', 'edge.end_shape_index'], action: 'include' },
+          filters: { attributes: ['edge.tunnel', 'edge.length', 'edge.names', 'edge.begin_shape_index', 'edge.end_shape_index', 'edge.way_id'], action: 'include' },
         }),
       })
       const data = await res.json()
       if (!res.ok || data.error) return null
-      // leg마다 shape 인덱스가 0부터 다시 시작하므로 병합은 leg 안에서만 한다
+      // leg마다 shape 인덱스가 0부터 다시 시작하므로 병합은 leg 안에서만 한다.
+      // 좌표가 실제로 이어지는(끝점 = 시작점) 엣지만 한 터널로 합친다 — 예전에는 인덱스 2칸까지
+      // 벌어져도 합쳤는데, 그러면 짧은 노출 구간을 사이에 둔 이웃 터널(기린6터널 ↔ 인제양양터널)까지
+      // 한 덩어리로 묶여 길이와 이름이 통째로 틀어졌다(실측 확인).
       const legSegs = []
       const edges = (data.edges ?? []).filter(e => e.tunnel).sort((a, b) => a.begin_shape_index - b.begin_shape_index)
       for (const e of edges) {
         const last = legSegs[legSegs.length - 1]
-        if (last && e.begin_shape_index <= last.end + 2) {
+        if (last && e.begin_shape_index <= last.end) {
           last.end = Math.max(last.end, e.end_shape_index)
           last.lengthM += (e.length ?? 0) * 1000
           ;(e.names ?? []).forEach(n => last.names.add(n))
+          if (e.way_id) last.wayIds.add(e.way_id)
         } else {
-          legSegs.push({ begin: e.begin_shape_index, end: e.end_shape_index, lengthM: (e.length ?? 0) * 1000, names: new Set(e.names ?? []) })
+          legSegs.push({
+            begin: e.begin_shape_index, end: e.end_shape_index,
+            lengthM: (e.length ?? 0) * 1000,
+            names: new Set(e.names ?? []), wayIds: new Set(e.way_id ? [e.way_id] : []),
+          })
         }
       }
+      legSegs.forEach(s => {
+        s.beginIdx = offset + s.begin
+        s.endIdx = offset + s.end
+        s.path = pts.slice(s.begin, s.end + 1)
+      })
       segs.push(...legSegs)
+      offset += pts.length
     }
-    return segs.map(s => ({ names: [...s.names], lengthM: Math.round(s.lengthM), begin: s.begin, end: s.end }))
+
+    // Valhalla는 도로명("서울양양고속도로")만 주고 OSM의 tunnel:name("인제양양터널")은 주지 않는다.
+    // 500m 이상 구간의 OSM way 태그를 한 번에 조회해 실제 터널 이름을 names 앞에 붙인다.
+    const osmNames = await fetchOsmTunnelNames([...new Set(segs.filter(s => s.lengthM >= 500).flatMap(s => [...s.wayIds]))])
+    const result = segs.map(s => {
+      const real = [...s.wayIds].map(id => osmNames[id]).filter(Boolean)
+      return {
+        names: [...new Set([...real, ...s.names])],
+        lengthM: Math.round(s.lengthM),
+        begin: s.begin, end: s.end, beginIdx: s.beginIdx, endIdx: s.endIdx, path: s.path,
+      }
+    })
+    traceCache.set(cacheKey, result)
+    return result
   } catch {
     return null
+  }
+}
+
+// OSM way id 목록 → { wayId: tunnel:name }. 공개 OSM API(CORS 허용·키 불필요), 실패하면 빈 객체라
+// 호출부는 그대로 도로명으로 폴백한다.
+async function fetchOsmTunnelNames(wayIds) {
+  if (!wayIds.length) return {}
+  try {
+    const res = await fetch(`https://api.openstreetmap.org/api/0.6/ways.json?ways=${wayIds.join(',')}`)
+    if (!res.ok) return {}
+    const data = await res.json()
+    return Object.fromEntries((data.elements ?? []).filter(w => w.tags?.['tunnel:name']).map(w => [w.id, w.tags['tunnel:name']]))
+  } catch {
+    return {}
   }
 }

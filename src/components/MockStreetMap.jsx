@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
-import { fetchRoute } from '../lib/route.js'
+import { fetchRoute, traceTunnels } from '../lib/route.js'
+import { tunnelDisplayName, formatTunnelLength, COMPANION_MIN_M } from '../lib/tunnelGeo.js'
 import { getCurrentPosition } from '../lib/geolocation.js'
 import { turnArrowSvg } from './NavOverlays.jsx'
 
@@ -21,6 +22,7 @@ const BLOCKS = [
   { x: 320, y: 340, w: 70, h: 70 }, { x: 460, y: 260, w: 90, h: 60 },
 ]
 const SEOUL = { lat: 37.5665, lng: 126.9780 }
+const TUNNEL_COLOR = '#E0312B' // 터널 구간 강조색 (경로 위 빨간 실선·입출구 점·이름 라벨)
 
 // routeProfile: 'shortest'(실도로 최단) | 'avoid'(고속도로 회피 실도로) | undefined(마커 잇는 직선)
 // onRoute: 실도로 경로 계산 완료 시 { path, maneuvers, ... } 전달 (내비게이션 페이지가 턴바이턴에 사용)
@@ -32,13 +34,16 @@ const SEOUL = { lat: 37.5665, lng: 126.9780 }
 //   진출 구간(주황 강조선 + 화살촉)이 그려져 어느 길로 빠지는지 지도에서 바로 보인다.
 // path: [[lat,lng],...] — 호출부가 이미 계산해 둔 좌표 배열. 지정되면 내부에서 fetchRoute를
 //   다시 호출하지 않고 이 경로를 그대로 그린다(예: 터널 구간만 잘라낸 경로).
-export default function MockStreetMap({ children, markers, showPath = false, routeProfile, onRoute, navPosition, routeStyle, navGuide, myLocation = false, path }) {
+// showTunnels: 경로가 실제로 지나는 터널 구간을 빨간 실선으로 덧그린다. 카카오맵에는 터널 레이어가
+//   없으므로 Valhalla trace_attributes(OSM tunnel 태그)로 구간 좌표를 얻어 경로선 위에 얹는다.
+export default function MockStreetMap({ children, markers, showPath = false, routeProfile, onRoute, navPosition, routeStyle, navGuide, myLocation = false, path, showTunnels = false }) {
   const [coords, setCoords] = useState(null)
   const [geoError, setGeoError] = useState(false)
   const [kakaoError, setKakaoError] = useState(false)
   const [kakaoReady, setKakaoReady] = useState(false)
   const [resolvedMarkers, setResolvedMarkers] = useState([])
   const [routePath, setRoutePath] = useState(null) // Valhalla가 준 실도로 좌표 [[lat,lng],...]
+  const [tunnelSegs, setTunnelSegs] = useState([]) // 경로 위 터널 구간 [{ names, lengthM, path }]
   const containerRef = useRef(null)
   const mapObjRef = useRef({})
   const onRouteRef = useRef(onRoute)
@@ -154,17 +159,51 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
   useEffect(() => {
     if (path) { setRoutePath(path); onRouteRef.current?.({ path }); return }
     setRoutePath(null)
+    setTunnelSegs([])
     if (!showPath || !routeProfile || resolvedMarkers.length < 2) return
     let cancelled = false
     // 'avoid' 프로필 = 터널 완전 배제 경로 (Valhalla exclude_tunnels)
     fetchRoute(resolvedMarkers, { excludeTunnels: routeProfile === 'avoid' })
-      .then(route => {
+      .then(async route => {
         if (cancelled || !route) return
         setRoutePath(route.path)
         onRouteRef.current?.(route)
+        if (!showTunnels) return
+        const segs = await traceTunnels(route.shapes)
+        if (!cancelled && segs) setTunnelSegs(segs)
       })
     return () => { cancelled = true }
-  }, [resolvedMarkers, showPath, routeProfile, path])
+  }, [resolvedMarkers, showPath, routeProfile, path, showTunnels])
+
+  // 터널 구간 레이어 — 경로선 위에 빨간 실선을 얹고, 가장 긴 터널 3개에는 입·출구 점과 이름 라벨을
+  // 붙인다(장거리 경로는 터널이 수십 개라 전부 라벨을 달면 지도가 가려진다).
+  useEffect(() => {
+    const { kakao, map } = mapObjRef.current
+    if (!kakao || !map) return
+    mapObjRef.current.tunnelLayer?.forEach(o => o.setMap(null))
+    mapObjRef.current.tunnelLayer = []
+    if (!tunnelSegs.length) return
+    const toLL = ([la, ln]) => new kakao.maps.LatLng(la, ln)
+    const baseW = routeStyle?.weight ?? 5
+    const labeled = new Set([...tunnelSegs].filter(s => s.lengthM >= COMPANION_MIN_M).sort((a, b) => b.lengthM - a.lengthM).slice(0, 3))
+    const layer = []
+    tunnelSegs.forEach(seg => {
+      if (!seg.path || seg.path.length < 2) return
+      const segPath = seg.path.map(toLL)
+      layer.push(new kakao.maps.Polyline({ map, path: segPath, strokeWeight: baseW + 3, strokeColor: TUNNEL_COLOR, strokeOpacity: 0.95, strokeStyle: 'solid', zIndex: 4 }))
+      if (!labeled.has(seg)) return
+      for (const pt of [segPath[0], segPath[segPath.length - 1]]) {
+        const dot = document.createElement('div')
+        dot.style.cssText = `width:12px;height:12px;border-radius:50%;background:${TUNNEL_COLOR};border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)`
+        layer.push(new kakao.maps.CustomOverlay({ map, position: pt, content: dot, zIndex: 6 }))
+      }
+      const label = document.createElement('div')
+      label.style.cssText = `background:${TUNNEL_COLOR};color:#fff;font:700 11px Pretendard,sans-serif;padding:4px 9px;border-radius:8px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.3);display:flex;align-items:center;gap:5px`
+      label.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M3 20V12a9 9 0 0 1 18 0v8"/><path d="M3 20h18"/></svg><span>${tunnelDisplayName(seg)} ${formatTunnelLength(seg.lengthM)}</span>`
+      layer.push(new kakao.maps.CustomOverlay({ map, position: segPath[Math.floor(segPath.length / 2)], content: label, yAnchor: 1.6, zIndex: 7 }))
+    })
+    mapObjRef.current.tunnelLayer = layer
+  }, [tunnelSegs])
 
   // 주행 안내 강조 — 지나온 길/남은 길 구분 + 회전 지점 배지 + 진출 구간 강조선
   useEffect(() => {
