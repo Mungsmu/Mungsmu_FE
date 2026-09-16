@@ -41,6 +41,14 @@ export async function computeRouteResult(originStr, destStr, { originPlace: fixe
     if (!originPlace || !destPlace || waypointPlaces.some(p => !p)) return null
     const routePoints = [originPlace, ...waypointPlaces, destPlace]
 
+    // 상세 화면에 보여줄 정차 지점 목록 — 중간 경유지까지 순서대로 모두 담는다.
+    // 예전에는 "출발 / 도착" 두 줄로 고정돼, 안심 코스처럼 경유지가 있는 경로에서 중간 지점이 빠졌다.
+    const stopLabels = [
+      `${originStr} 출발`,
+      ...waypointStrs.map(w => `${w} 경유`),
+      `${destStr} 도착`,
+    ]
+
     const straightKm = haversineM(originPlace, destPlace) / 1000
     const region = REGIONS.find(r => destPlace.address.includes(r.name) || destPlace.name.includes(r.name) || destStr.includes(r.name))
     let tunnels = region ? TUNNELS.filter(t => t.region === region.name) : [] // 실측 실패 시 폴백
@@ -93,7 +101,7 @@ export async function computeRouteResult(originStr, destStr, { originPlace: fixe
       // 않고, 비교 화면 없이 이 경로 하나만 보여준다.
       return {
         hasTunnel: false,
-        avoid: { ...shortest, tunnelCount: 0, tunnelNames: [], tunnels: [], waypoints: [`${originStr} 출발`, `${destStr} 도착`] },
+        avoid: { ...shortest, tunnelCount: 0, tunnelNames: [], tunnels: [], waypoints: stopLabels },
         shortest,
       }
     }
@@ -108,7 +116,7 @@ export async function computeRouteResult(originStr, destStr, { originPlace: fixe
       avoid: {
         durationMin: avoidRoute?.durationMin ?? Math.max(5, Math.round((avoidKm / 62) * 60)),
         distanceKm: avoidKm, tunnelCount: 0,
-        waypoints: [`${originStr} 출발`, `${destStr} 방면 국도·해안도로 경유`],
+        waypoints: stopLabels,
         path: avoidRoute?.path, maneuvers: avoidRoute?.maneuvers, shapes: avoidRoute?.shapes, origin: originPlace, dest: destPlace,
       },
       shortest,

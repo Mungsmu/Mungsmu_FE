@@ -1,9 +1,11 @@
 // 마음숨길 화면 초안용 mock 데이터
 
+// distance/durationMin은 각 코스의 경유지를 실제 지오코딩해서 Valhalla 실도로 경로로 잰 값이다
+// (예전 표기는 실제와 크게 달랐다 — 속초 해안 코스는 22km로 적혀 있었지만 실제는 8km).
 export const COURSES = [
   {
     id: 'c1', title: '속초 해안 힐링 코스', region: '속초 · 고성',
-    grade: 'green', distance: '약 22km', safetyScore: 95,
+    grade: 'green', distance: '약 8km', durationMin: 21, safetyScore: 95,
     tags: ['터널 0', '해안', '해수욕'],
     summary: '청초호에서 아야진까지 7번 국도를 따라 바다를 옆에 끼고 달리는 완전 무터널 코스',
     spots: [
@@ -14,7 +16,7 @@ export const COURSES = [
   },
   {
     id: 'c2', title: '강릉 커피·바다 코스', region: '강릉',
-    grade: 'green', distance: '약 18km', safetyScore: 92,
+    grade: 'green', distance: '약 5km', durationMin: 10, safetyScore: 92,
     tags: ['터널 0', '카페', '해안'],
     summary: '안목해변 커피거리에서 경포까지, 바다 뷰 카페와 해변을 잇는 도심 드라이브',
     spots: [
@@ -24,7 +26,7 @@ export const COURSES = [
   },
   {
     id: 'c3', title: '원주 예술·협곡 코스', region: '원주',
-    grade: 'green', distance: '약 16km', safetyScore: 88,
+    grade: 'green', distance: '약 13km', durationMin: 31, safetyScore: 88,
     tags: ['터널 0', '미술관', '트레킹'],
     summary: '뮤지엄산에서 소금산까지, 건축·자연·협곡이 어우러진 무터널 코스',
     spots: [
@@ -37,7 +39,7 @@ export const COURSES = [
     // 실제 경로(대관령 양떼목장 → 오대산 월정사 전나무숲)를 Valhalla + OSM 터널 태그로 확인한 결과
     // 통과 터널이 0개였다 — 예전 설명의 "짧은 터널 1개 포함"은 사실과 달라 바로잡았다.
     // 다만 고원 고갯길이라 굽잇길·경사 구간이 있어 안심 점수는 해안 코스보다 낮게 둔다.
-    grade: 'green', distance: '약 26km', safetyScore: 85,
+    grade: 'green', distance: '약 24km', durationMin: 50, safetyScore: 85,
     tags: ['터널 0', '고원', '자연'],
     summary: '대관령 양떼목장과 오대산 전나무숲을 잇는 무터널 고원 드라이브. 굽잇길이 있어 여유 있게',
     spots: [

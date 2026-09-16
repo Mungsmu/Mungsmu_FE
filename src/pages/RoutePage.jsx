@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { TUNNELS, REGIONS } from '../data/mock.js'
 import MockStreetMap from '../components/MockStreetMap.jsx'
@@ -49,6 +49,13 @@ async function computeRouteResult(originStr, destStr, { originPlace: fixedOrigin
     if (!originPlace || !destPlace || waypointPlaces.some(p => !p)) return null
     const routePoints = [originPlace, ...waypointPlaces, destPlace]
 
+    // 상세 화면에 보여줄 정차 지점 목록 — 중간 경유지까지 순서대로 모두 담는다.
+    const stopLabels = [
+      `${originStr} 출발`,
+      ...waypointStrs.map(w => `${w} 경유`),
+      `${destStr} 도착`,
+    ]
+
     const straightKm = haversineM(originPlace, destPlace) / 1000
     const region = REGIONS.find(r => destPlace.address.includes(r.name) || destPlace.name.includes(r.name) || destStr.includes(r.name))
     let tunnels = region ? TUNNELS.filter(t => t.region === region.name) : [] // 실측 실패 시 폴백
@@ -97,7 +104,7 @@ async function computeRouteResult(originStr, destStr, { originPlace: fixedOrigin
     if (!hasTunnel) {
       return {
         hasTunnel: false,
-        avoid: { ...shortest, tunnelCount: 0, tunnels: [], waypoints: [`${originStr} 출발`, `${destStr} 도착`] },
+        avoid: { ...shortest, tunnelCount: 0, tunnels: [], waypoints: stopLabels },
         shortest,
       }
     }
@@ -112,7 +119,7 @@ async function computeRouteResult(originStr, destStr, { originPlace: fixedOrigin
       avoid: {
         durationMin: avoidRoute?.durationMin ?? Math.max(5, Math.round((avoidKm / 62) * 60)),
         distanceKm: avoidKm, tunnelCount: 0,
-        waypoints: [`${originStr} 출발`, `${destStr} 방면 국도·해안도로 경유`],
+        waypoints: stopLabels,
         path: avoidRoute?.path, maneuvers: avoidRoute?.maneuvers, origin: originPlace, dest: destPlace,
       },
       shortest,
@@ -144,6 +151,11 @@ export default function RoutePage() {
   // 명시적인 플래그로 추적하고 사용자가 입력창을 직접 고치면 즉시 꺼버린다.
   const [originCoords, setOriginCoords] = useState(null)
   const [usingCurrentLocation, setUsingCurrentLocation] = useState(false)
+  // 코스 모드에서 "현재 위치 → 코스 전체"로 안내할지. 위치를 잡을 수 있으면 기본으로 켠다 —
+  // 코스만 따로 안내하면 정작 지금 있는 곳에서 코스까지 가는 길이 빠져 실제로 쓸 수 없다.
+  const [courseFromCurrent, setCourseFromCurrent] = useState(true)
+  // 실제로 경로를 계산할 때 쓴 출발지 이름 — 화면 상단 "A → B" 표기에 쓴다.
+  const [routeOriginLabel, setRouteOriginLabel] = useState(null)
   const [result, setResult] = useState(MOCK_RESULT)
   const route = result[selectedRoute]
   const tunnels = route.tunnels ?? []
@@ -153,7 +165,20 @@ export default function RoutePage() {
     setUsingCurrentLocation(false)
   }
 
-  const useCurrentLocation = () => {
+  // 출발지는 대부분 "지금 있는 곳"이다. 예전에는 빈 칸으로 시작해서 사용자가 직접 주소를 쳐야
+  // 했고, 그렇게 친 주소를 다시 지오코딩하면 실제 위치와 어긋나 경로가 엉뚱하게 잡혔다.
+  // 화면에 들어오면 한 번만 현재 위치로 채운다(이미 값이 있거나 코스 모드면 건드리지 않는다).
+  const autoLocatedRef = useRef(false)
+  useEffect(() => {
+    if (autoLocatedRef.current) return
+    // 코스 모드는 출발지 칸이 없지만, "현재 위치에서 코스까지" 안내를 위해 좌표는 미리 잡아둔다.
+    if (!courseMode && origin.trim()) return
+    autoLocatedRef.current = true
+    useCurrentLocation({ fillInput: !courseMode })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const useCurrentLocation = ({ fillInput = true } = {}) => {
     if (locating) return
     setLocating(true)
     setLocateError('')
@@ -165,8 +190,10 @@ export default function RoutePage() {
           try { address = await coordToAddress(await loadKakaoMaps(KAKAO_KEY), coords.lat, coords.lng) } catch { /* 실패 시 라벨로 대체 */ }
         }
         setOriginCoords({ ...coords, name: '현재 위치', address: address ?? '' })
-        setOrigin(address ?? '현재 위치')
-        setUsingCurrentLocation(true)
+        if (fillInput) {
+          setOrigin(address ?? '현재 위치')
+          setUsingCurrentLocation(true)
+        }
         setLocating(false)
       },
       () => { setLocateError('위치를 확인할 수 없어요. 브라우저 위치 권한을 확인해주세요.'); setLocating(false) },
@@ -177,6 +204,7 @@ export default function RoutePage() {
     if (!origin.trim() || !dest.trim()) return
     setLoading(true)
     const fixedOrigin = usingCurrentLocation ? originCoords : undefined
+    setRouteOriginLabel(origin.trim())
     const real = await computeRouteResult(origin.trim(), dest.trim(), { originPlace: fixedOrigin })
     const finalResult = real ?? MOCK_RESULT
     setResult(finalResult)
@@ -188,6 +216,10 @@ export default function RoutePage() {
 
   if (step === 'course') {
     const allSpots = [origin, ...waypoints, dest]
+    const startsHere = courseFromCurrent && !!originCoords
+    const courseStart = startsHere ? (originCoords.address || '현재 위치') : origin
+    // 실제로 안내할 지점 순서 — 현재 위치에서 출발하면 코스 전체가 경유지가 된다.
+    const routeSpots = startsHere ? [courseStart, ...allSpots] : allSpots
     return (
       <div style={{ maxWidth:640, margin:'0 auto', padding:'30px 26px 80px' }}>
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
@@ -199,18 +231,38 @@ export default function RoutePage() {
           <MockStreetMap
             showPath
             routeProfile="avoid"
-            markers={allSpots.map((name, i) => ({
-              id:`${i}`, label:String(i + 1), query:name,
-              color: i === 0 ? '#14807A' : i === allSpots.length - 1 ? '#D45B4E' : '#8A98A2',
+            markers={routeSpots.map((name, i) => ({
+              id:`${i}`, label: i === 0 && startsHere ? '출발' : String(startsHere ? i : i + 1), query:name,
+              ...(i === 0 && startsHere && originCoords ? { lat: originCoords.lat, lng: originCoords.lng } : {}),
+              color: i === 0 ? '#14807A' : i === routeSpots.length - 1 ? '#D45B4E' : '#8A98A2',
             }))}
           />
         </div>
+
+        {/* 출발지 — 코스만 따로 안내하면 지금 있는 곳에서 코스까지 가는 길이 빠진다 */}
+        <button onClick={() => { if (!originCoords && !locating) useCurrentLocation({ fillInput: false }); setCourseFromCurrent(v => !v) }}
+          disabled={locating}
+          style={{
+            display:'flex', alignItems:'center', gap:9, width:'100%', textAlign:'left',
+            borderRadius:12, border:`1.5px solid ${startsHere ? '#14807A' : '#E4EAEF'}`,
+            background: startsHere ? '#E6F4F2' : '#fff', padding:'11px 13px', marginBottom:16, cursor:'pointer',
+          }}>
+          <span style={{ fontSize:15 }}>{startsHere ? '📍' : '🚩'}</span>
+          <span style={{ flex:1 }}>
+            <span style={{ display:'block', fontSize:12.5, fontWeight:800, color:'#16242E' }}>
+              {locating ? '현재 위치 확인 중...' : startsHere ? '현재 위치에서 출발' : `${origin}에서 출발`}
+            </span>
+            <span style={{ display:'block', fontSize:11, color:'#5B6C78', marginTop:2 }}>
+              {startsHere ? courseStart : '코스 첫 지점부터 안내 · 눌러서 현재 위치에서 출발'}
+            </span>
+          </span>
+        </button>
 
         <div style={{ display:'flex', gap:16, marginBottom:14 }}>
           {courseDistance && (
             <div>
               <div style={{ fontWeight:800, fontSize:19 }}>{courseDistance}</div>
-              <div style={{ fontSize:10, color:'#8A98A2', marginTop:4 }}>총 거리</div>
+              <div style={{ fontSize:10, color:'#8A98A2', marginTop:4 }}>{startsHere ? '코스 구간' : '총 거리'}</div>
             </div>
           )}
           <div>
@@ -224,12 +276,17 @@ export default function RoutePage() {
             </div>
           )}
         </div>
+        {startsHere && (
+          <p style={{ fontSize:11.5, color:'#5B6C78', margin:'0 0 14px' }}>
+            현재 위치에서 코스 첫 지점까지 가는 거리는 위 숫자에 포함되지 않았어요. 실제 총 거리는 다음 화면에서 계산됩니다.
+          </p>
+        )}
 
         <p style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'#8A98A2', letterSpacing:'0.05em', margin:'0 0 9px' }}>순서대로 경유</p>
-        {allSpots.map((name, i) => (
+        {routeSpots.map((name, i) => (
           <div key={`${name}-${i}`} style={{ display:'flex', alignItems:'center', gap:9, fontSize:12.5, color:'#16242E', fontWeight:600, marginBottom:8 }}>
             <span style={{ width:19, height:19, borderRadius:'50%', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:800, color:'#fff',
-              background: i === 0 ? '#14807A' : i === allSpots.length - 1 ? '#D45B4E' : '#8A98A2' }}>{i + 1}</span>
+              background: i === 0 ? '#14807A' : i === routeSpots.length - 1 ? '#D45B4E' : '#8A98A2' }}>{startsHere && i === 0 ? '📍' : (startsHere ? i : i + 1)}</span>
             {name}
           </div>
         ))}
@@ -241,7 +298,14 @@ export default function RoutePage() {
             // 코스도 일반 길찾기와 똑같이 최단 루트/터널 회피 루트를 비교해서 보여주고, 최단 루트를
             // 고르면 실제로 지나는 터널에서 동반 모드가 뜨도록 한다 — "터널 1개 포함" 태그가 있어도
             // 예전에는 무조건 회피 루트만 계산해서 동반 모드가 뜰 좌표 자체가 없었다.
-            const real = await computeRouteResult(origin, dest, { waypoints })
+            const startFromHere = courseFromCurrent && originCoords
+            setRouteOriginLabel(startFromHere ? (originCoords.address || '현재 위치') : origin)
+            const real = startFromHere
+              ? await computeRouteResult(originCoords.address || '현재 위치', dest, {
+                  originPlace: originCoords,
+                  waypoints: [origin, ...waypoints],
+                })
+              : await computeRouteResult(origin, dest, { waypoints })
             const finalResult = real ?? MOCK_RESULT
             setResult(finalResult)
             setLoading(false)
@@ -277,11 +341,17 @@ export default function RoutePage() {
           </div>
         </div>
 
-        <div onClick={useCurrentLocation}
-          style={{ display:'flex', alignItems:'center', gap:8, marginBottom: locateError ? 6 : 16, cursor: locating ? 'default' : 'pointer', opacity: locating ? 0.6 : 1 }}>
-          <span style={{ width:8, height:8, borderRadius:'50%', background:'#14807A' }} />
-          <span style={{ fontSize:12.5, fontWeight:700, color:'#14807A' }}>{locating ? '현재 위치 확인 중...' : '현재 위치에서 출발'}</span>
-        </div>
+        <button onClick={useCurrentLocation} disabled={locating}
+          style={{
+            display:'flex', alignItems:'center', justifyContent:'center', gap:7, width:'100%', height:40,
+            borderRadius:11, border:`1.5px solid ${usingCurrentLocation ? '#14807A' : '#CFE0DC'}`,
+            background: usingCurrentLocation ? '#E6F4F2' : '#fff',
+            color:'#14807A', fontSize:13, fontWeight:800,
+            marginBottom: locateError ? 6 : 16, cursor: locating ? 'default' : 'pointer', opacity: locating ? 0.6 : 1,
+          }}>
+          <span>📍</span>
+          <span>{locating ? '현재 위치 확인 중...' : usingCurrentLocation ? '현재 위치에서 출발 중' : '현재 위치에서 출발'}</span>
+        </button>
         {locateError && <p style={{ fontSize:11.5, color:'#A53E33', marginBottom:16 }}>{locateError}</p>}
 
         <button onClick={search} disabled={!origin.trim() || !dest.trim() || loading}
@@ -310,7 +380,7 @@ export default function RoutePage() {
       <div style={{ maxWidth:720, margin:'0 auto', padding:'30px 26px 80px' }}>
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
           <span onClick={() => setStep('input')} style={{ fontSize:20, color:'#8A98A2', cursor:'pointer' }}>‹</span>
-          <span style={{ fontSize:14, fontWeight:700 }}>{origin} → {dest}</span>
+          <span style={{ fontSize:14, fontWeight:700 }}>{routeOriginLabel ?? origin} → {dest}</span>
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:11 }}>
@@ -374,7 +444,7 @@ export default function RoutePage() {
       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
         {/* 비교할 회피 루트가 없는 경우(hasTunnel: false)에는 compare 단계 자체가 없으므로 입력 화면으로 돌아간다 */}
         <span onClick={() => setStep(result.hasTunnel === false ? (courseMode ? 'course' : 'input') : 'compare')} style={{ fontSize:20, color:'#8A98A2', cursor:'pointer' }}>‹</span>
-        <span style={{ fontSize:14, fontWeight:700 }}>{origin} → {dest}</span>
+        <span style={{ fontSize:14, fontWeight:700 }}>{routeOriginLabel ?? origin} → {dest}</span>
       </div>
 
       <div style={{ display:'flex', flexDirection:'column', gap:20, marginTop:20 }}>

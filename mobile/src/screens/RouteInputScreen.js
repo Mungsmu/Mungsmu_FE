@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator, Alert } from 'react-native'
 import { useNavigation, useRoute } from '@react-navigation/native'
 import * as Location from 'expo-location'
@@ -26,6 +26,17 @@ export default function RouteInputScreen() {
     setOrigin(v)
     setUsingCurrentLocation(false)
   }
+
+  // 출발지는 대부분 "지금 있는 곳"이다. 예전에는 빈 칸으로 시작해 사용자가 직접 주소를 쳐야 했고,
+  // 그렇게 친 주소를 다시 지오코딩하면 실제 위치와 어긋나 경로가 엉뚱하게 잡혔다. 화면에 들어오면
+  // 한 번만 현재 위치로 채운다.
+  const autoLocatedRef = useRef(false)
+  useEffect(() => {
+    if (autoLocatedRef.current || origin.trim()) return
+    autoLocatedRef.current = true
+    useCurrentLocation()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const useCurrentLocation = async () => {
     if (locating) return
