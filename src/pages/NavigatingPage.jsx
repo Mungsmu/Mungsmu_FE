@@ -205,7 +205,7 @@ export default function NavigatingPage() {
     setTunnelPct(100)
     setPassedTunnels(prev => [...prev, { name: t.name, diff: t.diff, sec }])
     // 오버레이만 걷어내고 주행은 그대로 이어진다 — 페이지 전환이 없으므로 진행률·지도가 끊기지 않는다.
-    setTimeout(() => { setTunnelPhase(null); setTunnelPct(0) }, 1600)
+    setTimeout(() => { setTunnelPhase(null); setTunnelPct(0); setTunnelExitWarned(false); tunnelExitWarnedRef.current = false }, 1600)
   }
 
   // 경로상 누적거리로 "다음/현재 터널"을 갱신하고, 진입·통과 시점에 한 번씩만 부수효과를 낸다.

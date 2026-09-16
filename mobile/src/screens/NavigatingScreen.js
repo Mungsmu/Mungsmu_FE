@@ -235,7 +235,7 @@ export default function NavigatingScreen() {
     speak(`${t.name}을 통과하셨습니다. 경로 안내를 이어갑니다.`)
     setTunnelPct(100)
     setPassedTunnels(prev => [...prev, { name: t.name, diff: t.diff, sec }])
-    setTimeout(() => { setTunnelPhase(null); setTunnelPct(0) }, 1600)
+    setTimeout(() => { setTunnelPhase(null); setTunnelPct(0); setTunnelExitWarned(false); tunnelExitWarnedRef.current = false }, 1600)
   }
 
   // 경로상 누적거리로 "다음/현재 터널"을 갱신하고, 진입·통과 시점에 한 번씩만 부수효과를 낸다.
