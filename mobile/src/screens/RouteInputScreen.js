@@ -22,7 +22,13 @@ export default function RouteInputScreen() {
   const [originCoords, setOriginCoords] = useState(null)
   const [usingCurrentLocation, setUsingCurrentLocation] = useState(false)
 
+  // 사용자가 출발지를 직접 건드렸는지. 자동 위치 채우기가 늦게 끝나면서 입력 중인 글자를
+  // 덮어쓰지 않도록 하는 데 쓴다 — 한글 입력 중에 값이 통째로 바뀌면 조합이 끊기면서
+  // 키보드가 내려가 버린다(사용자 리포트 "한 글자 입력하면 키보드가 내려감").
+  const originTouchedRef = useRef(false)
+
   const handleOriginChange = v => {
+    originTouchedRef.current = true
     setOrigin(v)
     setUsingCurrentLocation(false)
   }
@@ -34,27 +40,32 @@ export default function RouteInputScreen() {
   useEffect(() => {
     if (autoLocatedRef.current || origin.trim()) return
     autoLocatedRef.current = true
-    useCurrentLocation()
+    useCurrentLocation({ auto: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const useCurrentLocation = async () => {
+  // auto: 화면 진입 시 자동으로 부른 경우. 이때는 사용자가 이미 입력을 시작했으면 덮어쓰지 않고,
+  // 실패해도 경고창을 띄우지 않는다(직접 누른 게 아닌데 팝업이 뜨면 놀라기만 한다).
+  const useCurrentLocation = async ({ auto = false } = {}) => {
     if (locating) return
     setLocating(true)
     try {
       const { status } = await Location.requestForegroundPermissionsAsync()
       if (status !== 'granted') {
-        Alert.alert('위치 권한이 필요해요', '설정에서 위치 접근 권한을 허용해주세요.')
+        if (!auto) Alert.alert('위치 권한이 필요해요', '설정에서 위치 접근 권한을 허용해주세요.')
         return
       }
       const pos = await getCurrentPosition()
       const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
       const address = await reverseGeocode(coords)
       setOriginCoords({ ...coords, name: '현재 위치', address: address ?? '' })
-      setOrigin(address ?? '현재 위치')
-      setUsingCurrentLocation(true)
+      // 자동 호출인데 그 사이 사용자가 입력을 시작했다면 좌표만 챙기고 입력창은 그대로 둔다.
+      if (!(auto && originTouchedRef.current)) {
+        setOrigin(address ?? '현재 위치')
+        setUsingCurrentLocation(true)
+      }
     } catch {
-      Alert.alert('위치를 확인할 수 없어요', 'GPS 신호를 받을 수 없습니다. 잠시 후 다시 시도해주세요.')
+      if (!auto) Alert.alert('위치를 확인할 수 없어요', 'GPS 신호를 받을 수 없습니다. 잠시 후 다시 시도해주세요.')
     } finally {
       setLocating(false)
     }
