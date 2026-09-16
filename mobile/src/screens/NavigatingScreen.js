@@ -334,8 +334,12 @@ export default function NavigatingScreen() {
       if (gpsLiveRef.current && !inTunnelRef.current) return
       // 터널 안에서는 실제 주행 속도로 움직인다 — 통과 시간이 "터널 길이 ÷ 속도"와 맞아야
       // 동반 모드가 입구~출구 구간에서만 정확히 유지된다.
-      const inTun = routeTunnelsRef.current.some(t => t.entered && !t.passed)
-      const mps = inTun
+      // 터널 안 속도를 어떻게 잡느냐는 "지금 진짜로 달리고 있는지"에 달렸다.
+      //  · 실제 GPS로 주행하다 터널에서 신호가 끊긴 경우 → 진입 직전 속도로 추측항법(실제 속도).
+      //  · 처음부터 GPS 없이 시뮬레이션으로 달리는 경우 → 터널 안에서도 같은 배속을 유지한다.
+      // 예전에는 시뮬레이션에서도 터널에 들어가는 순간 배속이 6배 꺾여, 내 위치가 멈춘 것처럼 보였다.
+      const deadReckoning = inTunnelRef.current && onRouteRef.current
+      const mps = deadReckoning
         ? Math.min(MAX_PASS_KMH, Math.max(MIN_PASS_KMH, navStateRef.current?.speedKmh || DEFAULT_PASS_KMH)) / 3.6
         : DEMO_SPEED_MPS
       const step = mps * (TICK_MS / 1000)
