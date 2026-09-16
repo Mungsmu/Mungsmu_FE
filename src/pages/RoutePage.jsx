@@ -156,6 +156,9 @@ export default function RoutePage() {
   const [courseFromCurrent, setCourseFromCurrent] = useState(true)
   // 실제로 경로를 계산할 때 쓴 출발지 이름 — 화면 상단 "A → B" 표기에 쓴다.
   const [routeOriginLabel, setRouteOriginLabel] = useState(null)
+  // 마지막으로 포커스한 입력 칸 — 하단 "최근 검색"을 눌렀을 때 어느 칸에 채울지 정한다.
+  // 예전에는 무조건 목적지에 넣어서, 출발지를 고치던 중에 누르면 아무 반응이 없어 보였다.
+  const [activeField, setActiveField] = useState('dest')
   const [result, setResult] = useState(MOCK_RESULT)
   const route = result[selectedRoute]
   const tunnels = route.tunnels ?? []
@@ -344,11 +347,13 @@ export default function RoutePage() {
 
         <div style={{ background:'#F6F8FA', border:'1px solid #E4EAEF', borderRadius:13, padding:'5px 13px', marginBottom:16 }}>
           <div style={{ padding:'12px 0' }}>
-            <PlaceAutocomplete value={origin} onChange={handleOriginChange} dotColor="#14807A" placeholder="서울 (출발)" />
+            <PlaceAutocomplete value={origin} onChange={handleOriginChange} dotColor="#14807A" placeholder="출발지"
+              recent={RECENT} onFieldFocus={() => setActiveField('origin')} />
           </div>
           <div style={{ borderBottom:'1px solid #E9EDF1' }} />
           <div style={{ padding:'12px 0' }}>
-            <PlaceAutocomplete value={dest} onChange={setDest} onEnter={search} dotColor="#D45B4E" placeholder="강릉시 경포해변" />
+            <PlaceAutocomplete value={dest} onChange={setDest} onEnter={search} dotColor="#D45B4E" placeholder="목적지"
+              recent={RECENT} onFieldFocus={() => setActiveField('dest')} />
           </div>
         </div>
 
@@ -371,9 +376,11 @@ export default function RoutePage() {
         </button>
 
         <div style={{ marginTop:22 }}>
-          <p style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'#8A98A2', letterSpacing:'0.05em', marginBottom:10 }}>최근 검색</p>
+          <p style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'#8A98A2', letterSpacing:'0.05em', marginBottom:10 }}>
+            최근 검색 · 누르면 {activeField === 'origin' ? '출발지' : '목적지'}에 들어가요
+          </p>
           {RECENT.map(item => (
-            <div key={item} onClick={() => setDest(item)}
+            <div key={item} onClick={() => (activeField === 'origin' ? handleOriginChange(item) : setDest(item))}
               style={{ display:'flex', gap:10, padding:'9px 0', borderBottom:'1px solid #F0F3F5', cursor:'pointer' }}>
               <span style={{ fontSize:14 }}>🕓</span>
               <span style={{ fontSize:12.5, color:'#5B6C78' }}>{item}</span>

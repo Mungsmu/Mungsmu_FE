@@ -6,7 +6,7 @@ const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 // 카카오맵 Places 키워드 검색으로 실제 장소를 추천해주는 출발지/목적지 입력창.
 // 비어있는 채로 포커스하면 최근 검색을 드롭다운으로 보여준다 (네이버 지도 검색창 방식).
 // 키가 없으면 그냥 평범한 텍스트 입력창으로 동작한다.
-export default function PlaceAutocomplete({ value, onChange, onEnter, placeholder, dotColor, recent }) {
+export default function PlaceAutocomplete({ value, onChange, onEnter, placeholder, dotColor, recent, onFieldFocus }) {
   const [results, setResults] = useState([])
   const [showRecent, setShowRecent] = useState(false)
   const [open, setOpen] = useState(false)
@@ -55,6 +55,7 @@ export default function PlaceAutocomplete({ value, onChange, onEnter, placeholde
 
   const handleFocus = () => {
     focusedRef.current = true
+    onFieldFocus?.() // 하단 "최근 검색"이 어느 칸에 채워야 할지 알 수 있게 알려준다
     if (value.trim() === '' && recent?.length) { setShowRecent(true); setOpen(true) }
     else if (results.length > 0) setOpen(true)
   }

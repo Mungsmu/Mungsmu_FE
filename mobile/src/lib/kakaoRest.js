@@ -42,6 +42,31 @@ async function photonSearch(query) {
   }
 }
 
+// 입력창 자동완성용 후보 목록. 카카오 키가 없을 때 keywordSearch를 대신한다 —
+// 반환 형태는 카카오 문서와 같게 맞춰서 호출부가 분기하지 않아도 되게 한다.
+async function photonSuggest(query, limit = 6) {
+  try {
+    await photonTurn()
+    const res = await fetch(`${PHOTON}/api/?q=${encodeURIComponent(query)}&limit=${limit}&bbox=${KR_BBOX}`)
+    if (!res.ok) return []
+    const feats = (await res.json())?.features ?? []
+    return feats
+      .filter(f => f.geometry?.coordinates && f.properties?.name)
+      .map((f, i) => {
+        const [lng, lat] = f.geometry.coordinates
+        return {
+          id: `photon-${f.properties.osm_id ?? i}`,
+          place_name: f.properties.name,
+          road_address_name: '',
+          address_name: photonAddress(f.properties) ?? '',
+          x: String(lng), y: String(lat),
+        }
+      })
+  } catch {
+    return []
+  }
+}
+
 async function photonReverse({ lat, lng }) {
   try {
     await photonTurn()
@@ -70,7 +95,9 @@ export async function addressSearch(query) {
 }
 
 export async function keywordSearch(query) {
-  if (!KAKAO_REST_KEY || !query) return []
+  if (!query?.trim()) return []
+  // 키가 없으면 입력창 자동완성이 통째로 죽어 어디를 고르는지 알 수 없었다 — Photon으로 대신한다.
+  if (!KAKAO_REST_KEY) return photonSuggest(query.trim())
   try {
     const res = await fetch(`https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(query)}`, {
       headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` },
