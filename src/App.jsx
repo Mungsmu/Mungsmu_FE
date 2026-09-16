@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './Layout.jsx'
 import HomePage        from './pages/HomePage.jsx'
 import CoursesPage     from './pages/CoursesPage.jsx'
+import SpotsPage       from './pages/SpotsPage.jsx'
 import CourseDetailPage from './pages/CourseDetailPage.jsx'
 import TunnelsPage     from './pages/TunnelsPage.jsx'
 import TunnelDetailPage from './pages/TunnelDetailPage.jsx'
@@ -26,6 +27,7 @@ export default function App() {
           <Route index element={<Navigate to={getSession() ? '/home' : '/login'} replace />} />
           <Route path="/home"        element={<HomePage />} />
           <Route path="/courses"     element={<CoursesPage />} />
+          <Route path="/spots"       element={<SpotsPage />} />
           <Route path="/courses/:id" element={<CourseDetailPage />} />
           <Route path="/tunnels"     element={<TunnelsPage />} />
           <Route path="/tunnels/:id" element={<TunnelDetailPage />} />

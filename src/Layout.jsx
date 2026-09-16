@@ -4,6 +4,7 @@ import { getSession } from './lib/auth.js'
 const NAV = [
   { to: '/home',    label: '홈' },
   { to: '/courses', label: '안심 코스' },
+  { to: '/spots',   label: '관광지 추천' },
   { to: '/tunnels', label: '터널 백과' },
   { to: '/route',   label: '길찾기' },
   { to: '/my',      label: '마이페이지' },
