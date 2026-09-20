@@ -75,15 +75,18 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
 
   // 실제 GPS 좌표를 받으면 지도 중심을 옮긴다 (경로 마커가 없을 때만).
   // 단, 내비 주행 중(navPosition 제어)에는 GPS 좌표가 지도 중심을 뺏어가지 않게 한다.
+  // kakaoReady를 의존성에 넣어야 한다 — GPS 조회(getCurrentPosition)가 카카오맵 SDK 로딩보다
+  // 먼저 끝나는 경우가 흔한데, 그때는 이 effect가 "지도 아직 없음" 상태로 한 번 실행되고 끝나
+  // coords가 그 뒤로 안 바뀌면 지도가 준비돼도 다시 실행되지 않아 위치가 영영 안 찍혔다.
   useEffect(() => {
     const { kakao, map } = mapObjRef.current
     if (!coords || !kakao || !map || navigatingRef.current) return
     const pos = new kakao.maps.LatLng(coords.lat, coords.lng)
     if (!markers?.length) map.setCenter(pos)
-  }, [coords, markerQuery])
+  }, [coords, markerQuery, kakaoReady])
 
   // 현재 위치 하이라이트 — myLocation prop을 켠 화면(홈 화면)에서만 빨간 레이저 포인트로 표시.
-  // 길찾기·경로 상세 등 나머지 화면에서는 그리지 않는다.
+  // 길찾기·경로 상세 등 나머지 화면에서는 그리지 않는다. (kakaoReady 이유는 위 effect와 동일)
   useEffect(() => {
     const { kakao, map } = mapObjRef.current
     if (!kakao || !map) return
@@ -107,7 +110,7 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
     } else {
       mapObjRef.current.myLocOverlay.setPosition(pos)
     }
-  }, [coords, myLocation])
+  }, [coords, myLocation, kakaoReady])
 
   // 헤딩업(진행 방향이 항상 화면 위) 회전 시 지도 컨테이너(containerRef)를 정사각형 대각선
   // 크기로 키워 wrapRef(overflow:hidden, 실제 화면 크기) 안에 중앙 정렬한다 — 그래야 어느
@@ -361,6 +364,13 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
             실제 버튼/입력창에서만 다시 pointerEvents:auto로 되살린다. */}
         <div style={{ position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none' }}>
           {markerBadge}
+          {/* 실제 카카오맵 경로에는(SVG 목업과 달리) 위치 실패를 알려주는 표시가 아예 없어서,
+              권한 거부·조회 실패 시 사용자가 "왜 안 찍히는지" 알 방법이 없었다. */}
+          {myLocation && geoError && (
+            <div style={{ position: 'absolute', left: 14, bottom: 14, background: 'rgba(255,255,255,.95)', borderRadius: 8, padding: '7px 11px', fontSize: 11.5, color: '#A53E33', fontWeight: 600, boxShadow: '0 1px 4px rgba(20,40,60,.15)' }}>
+              내 위치를 확인할 수 없어요 — 브라우저 주소창의 위치 권한을 허용해주세요
+            </div>
+          )}
           {children}
         </div>
       </div>

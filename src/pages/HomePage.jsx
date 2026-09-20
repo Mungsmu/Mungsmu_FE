@@ -4,7 +4,8 @@ import MockStreetMap from '../components/MockStreetMap.jsx'
 import PlaceAutocomplete from '../components/PlaceAutocomplete.jsx'
 import { loadKakaoMaps, coordToAddress } from '../lib/kakaoMap.js'
 import { getCurrentPosition } from '../lib/geolocation.js'
-import { COURSES, GRADE } from '../data/mock.js'
+import { GRADE } from '../data/mock.js'
+import { fetchSafeCourses } from '../lib/tourApi.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const RECENT = ['속초 해수욕장', '양양 낙산사', '강릉 경포해변']
@@ -14,6 +15,7 @@ export default function HomePage() {
   const [dest, setDest] = useState('')
   const [panelOpen, setPanelOpen] = useState(true)
   const [myLocation, setMyLocation] = useState('')
+  const [courses, setCourses] = useState([])
 
   useEffect(() => {
     if (!KAKAO_KEY) return
@@ -24,6 +26,10 @@ export default function HomePage() {
         if (addr) setMyLocation(addr)
       } catch { /* 위치 표시는 실패해도 무시하고 '내 위치'로 폴백 */ }
     }, () => {})
+  }, [])
+
+  useEffect(() => {
+    fetchSafeCourses({}).then(data => setCourses(data.slice(0, 4)))
   }, [])
 
   const search = () => {
@@ -50,10 +56,13 @@ export default function HomePage() {
                 <h2 style={{ fontSize: 14.5, fontWeight: 800, color: 'var(--text-head)' }}>강원 안심 코스</h2>
                 <button onClick={() => nav('/courses')} style={{ fontSize: 11.5, color: 'var(--primary)', fontWeight: 700, cursor: 'pointer' }}>전체 보기 →</button>
               </div>
-              {COURSES.slice(0, 4).map(c => {
+              {courses.length === 0 && (
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', padding: '6px 2px' }}>코스를 불러오는 중...</p>
+              )}
+              {courses.map(c => {
                 const m = GRADE[c.grade]
                 return (
-                  <button key={c.id} onClick={() => nav(`/courses/${c.id}`)}
+                  <button key={c.id} onClick={() => nav(`/courses/${c.id}`, { state: { course: c } })}
                     style={{ display: 'block', width: '100%', textAlign: 'left', background: 'var(--bg-subtle)', border: '1px solid var(--border-light)', borderRadius: 'var(--r-lg)', padding: '11px 13px', marginBottom: 8, cursor: 'pointer' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                       <div>

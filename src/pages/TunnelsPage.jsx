@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { TUNNELS, DIFF } from '../data/mock.js'
+import { DIFF } from '../data/mock.js'
+import { GANGWON_TUNNELS } from '../data/gangwonTunnels.js'
 
 function DiffBar({ level }) {
   return (
@@ -22,7 +23,7 @@ export default function TunnelsPage() {
   const nav = useNavigate()
   const [q, setQ] = useState('')
   const [selectedFilter, setSelectedFilter] = useState('all')
-  const filtered = q ? TUNNELS.filter(t => t.name.includes(q) || t.road.includes(q)) : TUNNELS
+  const filtered = q ? GANGWON_TUNNELS.filter(t => t.name.includes(q) || t.road.includes(q)) : GANGWON_TUNNELS
   const list = selectedFilter === 'desc'
     ? [...filtered].sort((a, b) => b.diff - a.diff)
     : selectedFilter === 'asc'
@@ -33,7 +34,7 @@ export default function TunnelsPage() {
     <div style={{ maxWidth:1000, margin:'0 auto', padding:'30px 26px 80px' }}>
       <h1 style={{ fontSize:30, fontWeight:800, letterSpacing:'-.8px', marginBottom:6 }}>터널 정보 백과</h1>
       <p style={{ fontSize:16, color:'var(--text-sub)', marginBottom:22 }}>
-        길이·차로·환기·정체 종합 <strong style={{ color:'var(--text-head)' }}> 터널별 공황 난이도 1~5단계</strong>
+        길이·차로·폭·높이 종합 <strong style={{ color:'var(--text-head)' }}> 터널별 공황 난이도 1~5단계</strong>
       </p>
       <div style={{ position:'relative', marginBottom:22 }}>
         <span style={{ position:'absolute', left:17, top:'50%', transform:'translateY(-50%)', color:'#9FAEAF', fontSize:17, pointerEvents:'none' }}>⌕</span>
@@ -70,7 +71,7 @@ export default function TunnelsPage() {
               </div>
             </div>
             <div style={{ display:'flex', gap:26 }}>
-              {[['길이',`${(t.lengthM/1000).toFixed(2)}km`],['차로',`왕복 ${t.lanes}차로`],['환기',t.ventGrade],['정체',t.congestion]].map(([k,v]) => (
+              {[['길이',`${(t.lengthM/1000).toFixed(2)}km`],['차로',`왕복 ${t.lanes}차로`],['폭',`${t.widthM}m`],['높이',`${t.heightM}m`]].map(([k,v]) => (
                 <div key={k}>
                   <span style={{ fontSize:12.5, color:'var(--text-muted)', display:'block' }}>{k}</span>
                   <span style={{ fontSize:15, fontWeight:700, color:'#243C42' }}>{v}</span>
