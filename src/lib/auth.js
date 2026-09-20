@@ -1,5 +1,9 @@
-// Ma_BE(Spring Boot, :8080) API 클라이언트 + 세션 저장소.
-// 개발 중에는 vite.config.js의 프록시가 /api 요청을 백엔드로 전달한다.
+// Ma_BE(Spring Boot, :8081) API 클라이언트 + 세션 저장소.
+// 로컬 개발 중에는 vite.config.js의 프록시가 /api 요청을 백엔드로 전달하지만, 배포된 정적
+// 사이트에는 그 프록시가 없다 — 상대 경로로 요청하면 프론트 자신에게 요청이 가서 405/404가 난다.
+// VITE_API_BASE_URL이 설정돼 있으면(배포 환경) 그 주소를 앞에 붙이고, 없으면(로컬) 기존처럼
+// 상대 경로 그대로 둬서 프록시를 탄다.
+const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 const SESSION_KEY = 'maeum-sumgil:session'
 
 // ---------- 세션 (JWT + 표시용 프로필) ----------
@@ -29,7 +33,7 @@ async function request(path, { method = 'GET', body, auth = false } = {}) {
 
   let res
   try {
-    res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined })
+    res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined })
   } catch {
     throw new ApiError('서버에 연결할 수 없어요. 백엔드가 실행 중인지 확인해주세요.', 0, null)
   }
