@@ -23,7 +23,7 @@ export function clearSession() {
 // ---------- 공통 fetch 래퍼 ----------
 
 // 백엔드 공통 응답 포맷: { success, message, data }
-async function request(path, { method = 'GET', body, auth = false } = {}) {
+export async function request(path, { method = 'GET', body, auth = false } = {}) {
   const headers = {}
   if (body) headers['Content-Type'] = 'application/json'
   if (auth) {
