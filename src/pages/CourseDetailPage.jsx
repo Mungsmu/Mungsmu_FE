@@ -1,15 +1,42 @@
-import { useParams, useNavigate } from 'react-router-dom'
-import { COURSES, GRADE } from '../data/mock.js'
+import { useEffect, useState } from 'react'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { GRADE } from '../data/mock.js'
+import { fetchSafeCourses } from '../lib/tourApi.js'
 import MockStreetMap from '../components/MockStreetMap.jsx'
 
-const TYPE_BG = { '자연':'#E8F6EE','해변':'#E3F0F2','카페':'#FBF0D9','문화':'#EDE8F6','체험':'#F6EEE8','어촌':'#EBF0E8' }
+const TYPE_BG = { '자연':'#E8F6EE','해변':'#E3F0F2','카페':'#FBF0D9','문화':'#EDE8F6','체험':'#F6EEE8','어촌':'#EBF0E8','역사':'#F6EEE0' }
 
 export default function CourseDetailPage() {
   const { id } = useParams()
   const nav = useNavigate()
-  const course = COURSES.find(c => c.id === id)
+  const location = useLocation()
+  // 목록에서 클릭해 들어온 경우엔 코스 객체를 그대로 받아서 재조회가 필요 없다(빠름).
+  // 새로고침/직접 URL 진입 등 state가 없을 때만 백엔드에 코스 상세 조회 API가 없어서
+  // 전체 목록을 다시 받아 id로 찾는다(느림, 최대 15초) — 백엔드가 안내한 방식 그대로.
+  const [course, setCourse] = useState(location.state?.course ?? null)
+  const [loading, setLoading] = useState(!location.state?.course)
+
+  useEffect(() => {
+    if (location.state?.course) return
+    let cancelled = false
+    setLoading(true)
+    fetchSafeCourses({}).then(data => {
+      if (cancelled) return
+      setCourse(data.find(c => c.id === id) ?? null)
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [id, location.state])
+
+  if (loading) return <p style={{ padding:60, textAlign:'center', color:'var(--text-muted)' }}>코스를 불러오는 중... (최대 15초)</p>
   if (!course) return <p style={{ padding:60, textAlign:'center', color:'var(--text-muted)' }}>코스를 찾을 수 없어요.</p>
   const m = GRADE[course.grade]
+
+  // 지오코딩 검색어에 "강원 + 시군구명"을 같이 넣는다 — 시군구명만으로는 부족한 경우가 있다
+  // (예: "고성군"은 강원/경남에 둘 다 있어서, 관광지 이름이 검색 안 돼 지역명까지 폴백되면
+  // 카카오가 경남 고성군을 대표로 잡아버림 — 실측 확인). "강원"까지 붙이면 최후의 폴백(지역명만
+  // 남는 경우)에서도 항상 올바른 도로 좁혀진다.
+  const withRegion = name => `강원 ${course.region} ${name}`
 
   const guideCourse = () => {
     const [first, ...rest] = course.spots
@@ -18,9 +45,9 @@ export default function CourseDetailPage() {
       state: {
         courseMode: true,
         courseTitle: course.title,
-        origin: first.name,
-        dest: last.name,
-        waypoints: rest.map(s => s.name),
+        origin: withRegion(first.name),
+        dest: withRegion(last.name),
+        waypoints: rest.map(s => withRegion(s.name)),
         distance: course.distance,
         tunnelTag: course.tags.find(t => t.startsWith('터널')),
       },
@@ -37,7 +64,7 @@ export default function CourseDetailPage() {
           <div style={{ borderRadius:24, height:420, overflow:'hidden', border:'1px solid var(--border-light)' }}>
             <MockStreetMap
               showPath
-              markers={course.spots.map((s, i) => ({ id:s.name, label:String(i + 1), query:s.name, color:'#14807A' }))}
+              markers={course.spots.map((s, i) => ({ id:s.name, label:String(i + 1), query:withRegion(s.name), color:'#14807A' }))}
             >
               <div style={{ position:'absolute', right:14, top:14, background:'rgba(255,255,255,.92)', borderRadius:8, padding:'6px 12px', fontSize:12.5, fontWeight:700, color:'var(--text-sub)' }}>
                 {course.spots.length}개 경유지

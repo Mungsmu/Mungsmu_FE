@@ -1,6 +1,7 @@
 import { View, Text, ScrollView, StyleSheet } from 'react-native'
 import { useRoute } from '@react-navigation/native'
-import { TUNNELS, DIFF } from '../data/mock'
+import { DIFF } from '../data/mock'
+import { GANGWON_TUNNELS } from '../data/gangwonTunnels'
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
 import MockMap from '../components/MockMap'
 
@@ -14,7 +15,7 @@ const DIFF_META = {
 
 export default function TunnelDetailScreen() {
   const { id } = useRoute().params
-  const t = TUNNELS.find(t => t.id === id)
+  const t = GANGWON_TUNNELS.find(t => t.id === id)
   if (!t) return <View style={styles.container}><Text style={styles.notFound}>터널 정보를 찾을 수 없어요.</Text></View>
 
   const dm = DIFF_META[t.diff]
@@ -25,7 +26,9 @@ export default function TunnelDetailScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 20 }}>
       <View style={styles.mapBox}>
-        <MockMap markers={[{ id: t.id, label: t.name, query: t.name, color: dc }]} />
+        {/* 실제 데이터셋에 진입 좌표(startLat/startLng)가 있어서, 이름으로 지오코딩할 필요 없이
+            바로 정확한 위치에 마커를 찍는다. */}
+        <MockMap markers={[{ id: t.id, label: t.name, lat: t.startLat, lng: t.startLng, color: dc }]} />
       </View>
 
       <View style={styles.headerRow}>
@@ -45,7 +48,7 @@ export default function TunnelDetailScreen() {
       </View>
 
       <View style={styles.grid}>
-        {[['길이', `${(t.lengthM / 1000).toFixed(2)}km`], ['차로수', `왕복 ${t.lanes}차로`], ['환기 등급', t.ventGrade], ['평균 통과', avgTime], ['정체 빈도', t.congestion], ['공황 난이도', `${t.diff} / 5단계`]].map(([k, v]) => (
+        {[['길이', `${(t.lengthM / 1000).toFixed(2)}km`], ['차로수', `왕복 ${t.lanes}차로`], ['폭', `${t.widthM}m`], ['평균 통과', avgTime], ['높이', `${t.heightM}m`], ['공황 난이도', `${t.diff} / 5단계`]].map(([k, v]) => (
           <View key={k} style={styles.gridItem}>
             <Text style={styles.gridKey}>{k}</Text>
             <Text style={styles.gridValue}>{v}</Text>

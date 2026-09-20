@@ -105,3 +105,9 @@ export async function getMe() {
   const { data } = await request('/api/members/me', { auth: true })
   return data
 }
+
+/** 내 정보 수정 — 이름/전화번호/보호자 정보/보호자 알림 (JWT 필요, 아이디·이메일은 변경 불가) */
+export async function updateMe(patch) {
+  const { data } = await request('/api/members/me', { method: 'PATCH', body: patch, auth: true })
+  return data
+}

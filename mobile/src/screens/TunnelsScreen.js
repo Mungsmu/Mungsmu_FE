@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { View, Text, TextInput, Pressable, ScrollView, StyleSheet } from 'react-native'
 import { useNavigation } from '@react-navigation/native'
-import { TUNNELS, DIFF } from '../data/mock'
+import { DIFF } from '../data/mock'
+import { GANGWON_TUNNELS } from '../data/gangwonTunnels'
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
 
 const FILTERS = [
@@ -24,7 +25,7 @@ export default function TunnelsScreen() {
   const nav = useNavigation()
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState('all')
-  const filtered = q ? TUNNELS.filter(t => t.name.includes(q) || t.road.includes(q)) : TUNNELS
+  const filtered = q ? GANGWON_TUNNELS.filter(t => t.name.includes(q) || t.road.includes(q)) : GANGWON_TUNNELS
   const list = filter === 'desc' ? [...filtered].sort((a, b) => b.diff - a.diff)
     : filter === 'asc' ? [...filtered].sort((a, b) => a.diff - b.diff)
     : filtered
@@ -32,7 +33,7 @@ export default function TunnelsScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 20 }}>
       <Text style={styles.title}>터널 정보 백과</Text>
-      <Text style={styles.subtitle}>길이·차로·환기·정체를 종합한 공황 난이도 1~5단계로 미리 확인하세요.</Text>
+      <Text style={styles.subtitle}>길이·차로·폭·높이를 종합한 공황 난이도 1~5단계로 미리 확인하세요.</Text>
 
       <View style={styles.searchBox}>
         <Text style={styles.searchIcon}>⌕</Text>
@@ -60,7 +61,7 @@ export default function TunnelsScreen() {
             </View>
           </View>
           <View style={styles.statRow}>
-            {[['길이', `${(t.lengthM / 1000).toFixed(2)}km`], ['차로', `왕복 ${t.lanes}차로`], ['환기', t.ventGrade], ['정체', t.congestion]].map(([k, v]) => (
+            {[['길이', `${(t.lengthM / 1000).toFixed(2)}km`], ['차로', `왕복 ${t.lanes}차로`], ['폭', `${t.widthM}m`], ['높이', `${t.heightM}m`]].map(([k, v]) => (
               <View key={k}>
                 <Text style={styles.statKey}>{k}</Text>
                 <Text style={styles.statValue}>{v}</Text>

@@ -25,12 +25,14 @@ function brighten(hex, factor) {
   return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`
 }
 
-export default function GangwonMap({ selected, onSelect }) {
+// regionGrades: { [지역명]: 'green'|'amber'|'red' } — 안심 코스 API 값으로 낸 등급이 있으면
+// 그걸로 덮어쓰고, 없으면(아직 안 받아왔거나 실패) 기존 정적 REGIONS 등급을 그대로 쓴다.
+export default function GangwonMap({ selected, onSelect, regionGrades }) {
   return (
     <View style={{ width: '100%', aspectRatio: GANGWON_VIEWBOX.w / (GANGWON_VIEWBOX.h * STRETCH) }}>
       <Svg viewBox={`0 0 ${GANGWON_VIEWBOX.w} ${GANGWON_VIEWBOX.h}`} width="100%" height="100%" preserveAspectRatio="none">
         {REGIONS.map(r => {
-          const m = GRADE[r.grade]
+          const m = GRADE[regionGrades?.[r.name] ?? r.grade]
           const geo = GANGWON_GEO[r.name]
           if (!geo) return null
           const isSel = selected === r.name
@@ -73,7 +75,7 @@ export default function GangwonMap({ selected, onSelect }) {
           )
         })}
         {REGIONS.map(r => {
-          const m = GRADE[r.grade]
+          const m = GRADE[regionGrades?.[r.name] ?? r.grade]
           const geo = GANGWON_GEO[r.name]
           if (!geo) return null
           return (

@@ -1,32 +1,115 @@
-// 백엔드 없이 AsyncStorage로 흉내내는 간이 계정/세션 저장소 (웹의 localStorage 버전과 동일한 구조).
+// Ma_BE(Spring Boot) API 클라이언트 + 세션 저장소 (웹의 src/lib/auth.js와 동일한 구조, 저장소만 AsyncStorage).
 import AsyncStorage from '@react-native-async-storage/async-storage'
 
-const USERS_KEY = 'maeum-sumgil:users'
 const SESSION_KEY = 'maeum-sumgil:session'
+const BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://ma-be-1.onrender.com'
 
-export async function getUsers() {
-  try { return JSON.parse(await AsyncStorage.getItem(USERS_KEY) ?? '[]') } catch { return [] }
-}
-
-export async function findUser(userId) {
-  const users = await getUsers()
-  return users.find(u => u.userId === userId) ?? null
-}
-
-export async function saveUser(user) {
-  const users = (await getUsers()).filter(u => u.userId !== user.userId)
-  users.push(user)
-  await AsyncStorage.setItem(USERS_KEY, JSON.stringify(users))
-}
+// ---------- 세션 (JWT + 표시용 프로필) ----------
 
 export async function getSession() {
   try { return JSON.parse(await AsyncStorage.getItem(SESSION_KEY) ?? 'null') } catch { return null }
 }
 
-export async function setSession(user) {
-  await AsyncStorage.setItem(SESSION_KEY, JSON.stringify({ userId: user.userId, name: user.name }))
+export async function setSession(session) {
+  await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(session))
 }
 
 export async function clearSession() {
   await AsyncStorage.removeItem(SESSION_KEY)
+}
+
+// ---------- 공통 fetch 래퍼 ----------
+
+// 백엔드 공통 응답 포맷: { success, message, data }
+async function request(path, { method = 'GET', body, auth = false } = {}) {
+  const headers = {}
+  if (body) headers['Content-Type'] = 'application/json'
+  if (auth) {
+    const token = (await getSession())?.accessToken
+    if (token) headers['Authorization'] = `Bearer ${token}`
+  }
+
+  let res
+  try {
+    res = await fetch(`${BASE_URL}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined })
+  } catch {
+    throw new ApiError('서버에 연결할 수 없어요. 잠시 후 다시 시도해주세요.', 0, null)
+  }
+
+  let payload = null
+  try { payload = await res.json() } catch { /* 본문 없는 응답 */ }
+
+  if (!res.ok || payload?.success === false) {
+    throw new ApiError(payload?.message ?? `요청에 실패했어요 (${res.status})`, res.status, payload?.data ?? null)
+  }
+  return payload
+}
+
+export class ApiError extends Error {
+  constructor(message, status, data) {
+    super(message)
+    this.status = status
+    this.data = data
+  }
+}
+
+// ---------- API ----------
+
+/** 아이디 중복확인 → true(사용 가능) / false(중복) */
+export async function checkUsername(username) {
+  const { data } = await request(`/api/members/check-username?username=${encodeURIComponent(username)}`)
+  return data?.available === true
+}
+
+/** SMS 인증번호 발송 */
+export function sendSmsCode(phone) {
+  return request('/api/sms/send', { method: 'POST', body: { phone } })
+}
+
+/** SMS 인증번호 확인 — 불일치/만료 시 ApiError */
+export function verifySmsCode(phone, code) {
+  return request('/api/sms/verify', { method: 'POST', body: { phone, code } })
+}
+
+/** 회원가입 */
+export function signup(form) {
+  return request('/api/members/signup', {
+    method: 'POST',
+    body: {
+      name: form.name,
+      phone: form.phone,
+      email: form.email,
+      username: form.userId,
+      password: form.password,
+      passwordConfirm: form.passwordConfirm,
+      guardianName: form.guardianName,
+      guardianPhone: form.guardianPhone,
+      guardianRelation: form.relation,
+    },
+  })
+}
+
+/** 로그인 → JWT 발급받아 세션 저장, 내 정보까지 채워서 반환 */
+export async function login(username, password) {
+  const { data } = await request('/api/auth/login', { method: 'POST', body: { username, password } })
+  await setSession({ userId: username, name: username, accessToken: data.accessToken })
+  try {
+    const me = await getMe()
+    await setSession({ userId: me.username, name: me.name, accessToken: data.accessToken })
+    return me
+  } catch {
+    return { username, name: username } // 내 정보 조회 실패해도 로그인 자체는 유지
+  }
+}
+
+/** 내 정보 조회 (JWT 필요) */
+export async function getMe() {
+  const { data } = await request('/api/members/me', { auth: true })
+  return data
+}
+
+/** 내 정보 수정 — 이름/전화번호/보호자 정보/보호자 알림 (JWT 필요, 아이디·이메일은 변경 불가) */
+export async function updateMe(patch) {
+  const { data } = await request('/api/members/me', { method: 'PATCH', body: patch, auth: true })
+  return data
 }

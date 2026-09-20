@@ -92,6 +92,9 @@ export default function MockMap({ children, markers, showPath, path, navPosition
   const [mapFailed, setMapFailed] = useState(false)
   const [coords, setCoords] = useState(null)
   const [hasFix, setHasFix] = useState(false)
+  const [locError, setLocError] = useState(null) // 'denied' | 'failed' | null — 실제 카카오맵 경로에는
+  // SVG 목업과 달리 위치 실패를 알려주는 표시가 원래 아예 없어서, 권한 거부·조회 실패 시 사용자가
+  // "왜 안 찍히는지" 알 방법이 없었다.
   const [resolvedMarkers, setResolvedMarkers] = useState([])
   const markerQuery = markers?.map(m => (m.lat != null ? `${m.lat},${m.lng}` : m.query)).join('|') ?? ''
 
@@ -99,12 +102,12 @@ export default function MockMap({ children, markers, showPath, path, navPosition
     if (!HAS_JS_KEY || markers?.length) return // 마커가 있으면 좌표는 마커 쪽으로 지도 범위를 맞추므로 현재 위치는 굳이 안 구해도 된다
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync()
-      if (status !== 'granted') return
+      if (status !== 'granted') { setLocError('denied'); return }
       try {
         const pos = await getCurrentPosition()
         setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude })
         setHasFix(true)
-      } catch { /* 위치 못 구해도 지도 기본 중심으로 보여준다 */ }
+      } catch { setLocError('failed') }
     })()
   }, [markers])
 
@@ -133,6 +136,13 @@ export default function MockMap({ children, markers, showPath, path, navPosition
           markers={markers?.length ? resolvedMarkers : markers} showPath={showPath} path={path} navPosition={navPosition}
           onError={() => setMapFailed(true)}
         />
+        {!markers?.length && locError && (
+          <View style={styles.locErrorBadge}>
+            <Text style={styles.locErrorText}>
+              {locError === 'denied' ? '내 위치를 확인할 수 없어요 — 설정에서 위치 권한을 허용해주세요' : '내 위치를 가져오지 못했어요'}
+            </Text>
+          </View>
+        )}
         {children}
       </View>
     )
@@ -143,6 +153,8 @@ export default function MockMap({ children, markers, showPath, path, navPosition
 
 const styles = StyleSheet.create({
   container: { flex: 1, overflow: 'hidden', backgroundColor: '#E6EBE3' },
+  locErrorBadge: { position: 'absolute', left: 14, bottom: 14, backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 8, paddingHorizontal: 11, paddingVertical: 7 },
+  locErrorText: { fontSize: 11.5, fontWeight: '600', color: '#A53E33' },
   markerWrap: { position: 'absolute', left: '50%', top: '52%', marginLeft: -14, marginTop: -14, width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
   markerPulse: { position: 'absolute', width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(20,128,122,0.35)' },
   markerDot: { width: 18, height: 18, borderRadius: 9, backgroundColor: COLORS.primary, borderWidth: 3, borderColor: '#fff' },

@@ -60,32 +60,43 @@ export default function PlaceAutocompleteInput({ value, onChange, onSubmit, plac
           onBlur={handleBlur}
           placeholder={placeholder}
           placeholderTextColor={COLORS.textMuted}
+          // iOS 기본 키보드의 QuickType이 "출발지"처럼 주소/현재 위치로 보이는 칸에 위치 기반
+          // 자동완성 제안을 붙이려다가 첫 글자 입력 시 포커스가 끊기는 것으로 추정 — 이 칸에는
+          // 그런 컨텍스트 추론(주소/이름/이메일 등)을 아예 끈다.
+          textContentType="none"
+          autoComplete="off"
           style={styles.input}
         />
       </View>
 
-      {open && (
-        <View style={styles.dropdown}>
-          {showRecent ? (
-            <>
-              <Text style={styles.dropdownLabel}>최근 검색</Text>
-              {recent.map(r => (
-                <Pressable key={r} onPress={() => pickRecent(r)} style={styles.recentRow}>
-                  <Text style={styles.recentIcon}>🕓</Text>
-                  <Text style={styles.recentText}>{r}</Text>
-                </Pressable>
-              ))}
-            </>
-          ) : (
-            results.map(r => (
-              <Pressable key={r.id} onPress={() => pick(r)} style={styles.resultRow}>
-                <Text style={styles.resultName}>{r.place_name}</Text>
-                <Text style={styles.resultAddr}>{r.road_address_name || r.address_name}</Text>
+      {/* 드롭다운을 open 여부로 통째로 마운트/언마운트하면(예전 방식), 빈 칸 상태에서 뜬 "최근 검색"
+          목록이 곧바로 새 글자 입력으로 닫힐 때 뷰 트리 전체가 한 프레임에 사라지면서 실기기에서
+          입력창 포커스가 끊기고 키보드가 닫혀버렸다(사용자 리포트: "지우고 새로 치면 튕김").
+          이제 컨테이너는 항상 떠 있게 두고 pointerEvents·opacity로만 보이기/숨기기를 전환해
+          같은 입력 도중에 트리가 통째로 사라지는 일이 없게 한다. */}
+      <View
+        pointerEvents={open ? 'auto' : 'none'}
+        style={[styles.dropdown, !open && styles.dropdownHidden]}
+      >
+        {showRecent ? (
+          <>
+            <Text style={styles.dropdownLabel}>최근 검색</Text>
+            {recent.map(r => (
+              <Pressable key={r} onPress={() => pickRecent(r)} style={styles.recentRow}>
+                <Text style={styles.recentIcon}>🕓</Text>
+                <Text style={styles.recentText}>{r}</Text>
               </Pressable>
-            ))
-          )}
-        </View>
-      )}
+            ))}
+          </>
+        ) : (
+          results.map(r => (
+            <Pressable key={r.id} onPress={() => pick(r)} style={styles.resultRow}>
+              <Text style={styles.resultName}>{r.place_name}</Text>
+              <Text style={styles.resultAddr}>{r.road_address_name || r.address_name}</Text>
+            </Pressable>
+          ))
+        )}
+      </View>
     </View>
   )
 }
@@ -100,6 +111,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: COLORS.borderLight, overflow: 'hidden',
     shadowColor: '#142838', shadowOpacity: 0.14, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 6,
   },
+  dropdownHidden: { opacity: 0 },
   dropdownLabel: { fontSize: 10.5, color: COLORS.textMuted, letterSpacing: 1, paddingHorizontal: 14, paddingTop: 9, paddingBottom: 4 },
   recentRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 14, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: COLORS.borderLight },
   recentIcon: { fontSize: 13 },

@@ -16,16 +16,40 @@ const HTML = `
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <style>
-    html,body,#map{width:100%;height:100%;margin:0;padding:0;}
+    html,body{width:100%;height:100%;margin:0;padding:0;}
+    /* 주행 중 지도를 돌리려면(헤딩업) #map 자체를 CSS로 회전시켜야 하는데, 그러면 네모난 지도가
+       모서리에서 빈 공간을 드러낸다 — #mapWrap으로 화면 크기만큼만 잘라 보여주고(overflow:hidden),
+       그 안의 #map은 대각선 길이로 넉넉하게 키워 어느 각도로 돌아도 항상 꽉 차 보이게 한다.
+       평소(비주행) 화면에서는 다시 원래 크기로 되돌려 불필요한 타일 로딩을 피한다. */
+    #mapWrap{width:100%;height:100%;overflow:hidden;position:relative;}
+    #map{position:absolute;width:100%;height:100%;left:0;top:0;}
     @keyframes ripple { from { transform:scale(0.3); opacity:.6; } to { transform:scale(1); opacity:0; } }
   </style>
 </head>
 <body>
-  <div id="map"></div>
+  <div id="mapWrap"><div id="map"></div></div>
   <script>
-    var map, myLocOverlay, places, placeMarkers = [], pathLine;
+    var map, mapWrapEl, mapEl, myLocOverlay, places, placeMarkers = [], pathLine;
     var navOverlay, navArrowEl, navigating = false;
     function post(msg) { window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(msg)); }
+
+    // 주행 중(헤딩업)에는 #map을 대각선 크기로 키워 중앙 정렬하고, 평소에는 원래 크기로 되돌린다.
+    function sizeMapDiagonal() {
+      var w = mapWrapEl.clientWidth, h = mapWrapEl.clientHeight;
+      var diag = Math.ceil(Math.sqrt(w * w + h * h));
+      mapEl.style.width = diag + 'px'; mapEl.style.height = diag + 'px';
+      mapEl.style.left = ((w - diag) / 2) + 'px'; mapEl.style.top = ((h - diag) / 2) + 'px';
+    }
+    function sizeMapNormal() {
+      mapEl.style.width = '100%'; mapEl.style.height = '100%';
+      mapEl.style.left = '0px'; mapEl.style.top = '0px';
+    }
+    function relayoutKeepCenter() {
+      if (!map) return;
+      var center = map.getCenter();
+      map.relayout();
+      map.setCenter(center);
+    }
 
     // 홈 화면의 "현재 위치" 표시 — 웹(MockStreetMap.jsx의 myLocation)과 같은 빨간 리플 오버레이.
     window.setCenter = function(lat, lng, withMarker) {
@@ -50,20 +74,30 @@ const HTML = `
       }
     };
 
-    // 주행 카메라 — 헤딩 화살표 마커가 경로를 따라 움직이고, 지도가 진행 방향 앞쪽을 보도록 따라간다
-    // (동반 모드 터널 통과 애니메이션, 향후 턴바이턴 내비게이션에서 공유해 쓴다).
+    // 주행 카메라 — 헤딩업(진행 방향이 항상 화면 위) 방식. 화살표는 항상 화면 하단 중앙에 고정해
+    // 위를 가리키고, 대신 지도(#map) 자체를 진행 방향의 반대로 돌려서 "지금 가는 방향 = 화면 위"가
+    // 되게 한다. 실제 내비 앱들과 같은 방식 — 카카오맵 SDK엔 지도 자체 회전 API가 없어서 #map을
+    // CSS로 통째로 돌리는 방식을 쓴다(지도 위 지명 라벨도 같이 도는 건 감수한다).
     window.setNavPosition = function(json) {
       if (!map) return;
       var np = json ? JSON.parse(json) : null;
       if (!np) {
         if (navOverlay) { navOverlay.setMap(null); navOverlay = null; }
-        navigating = false;
+        if (navigating) {
+          navigating = false;
+          mapEl.style.transform = 'rotate(0deg)';
+          sizeMapNormal();
+          relayoutKeepCenter();
+        }
         return;
       }
       var first = !navigating;
       navigating = true;
       var pos = new kakao.maps.LatLng(np.lat, np.lng);
       if (first) {
+        sizeMapDiagonal();
+        relayoutKeepCenter();
+        mapEl.style.transition = 'transform .45s ease';
         var el = document.createElement('div');
         el.style.cssText = 'width:46px;height:46px;border-radius:50%;background:#fff;box-shadow:0 4px 16px rgba(15,50,90,.45);display:flex;align-items:center;justify-content:center;border:2.5px solid #1A6DE3';
         el.innerHTML = '<svg width="28" height="28" viewBox="0 0 24 24" style="transition:transform .45s ease"><path d="M12 2.5 L18.5 19.5 L12 15.8 L5.5 19.5 Z" fill="#1A6DE3"/></svg>';
@@ -72,9 +106,13 @@ const HTML = `
         navArrowEl = el.firstChild;
       }
       navOverlay.setPosition(pos);
+      // #map이 -heading만큼 돌기 때문에, 그 안에 얹힌 화살표도 같이 돌아 보인다 — 화살표 자체에
+      // +heading을 걸어 상쇄하면 화면상으로는 항상 정확히 위를 가리키게 된다.
       if (np.heading != null && navArrowEl) navArrowEl.style.transform = 'rotate(' + np.heading + 'deg)';
+      if (np.heading != null) mapEl.style.transform = 'rotate(' + (-np.heading) + 'deg)';
       if (np.zoom && map.getLevel() !== np.zoom) map.setLevel(np.zoom, { animate: true });
-      // 실제 내비처럼 차량이 화면 하단에 오도록, 지도 중심을 진행 방향 앞쪽으로 당긴다
+      // 실제 내비처럼 차량이 화면 하단에 오도록, 지도 중심을 진행 방향 앞쪽으로 당긴다. 위 회전과
+      // 합쳐지면 헤딩과 무관하게 항상 화면 아래쪽에 차량이, 위쪽에 앞으로 갈 길이 보인다.
       var AHEAD_M = { 3: 130, 4: 260, 5: 520, 7: 1500 };
       var aheadM = AHEAD_M[np.zoom] || 260;
       var rad = ((np.heading || 0) * Math.PI) / 180;
@@ -158,24 +196,26 @@ const HTML = `
     script.onload = function() {
       try {
         kakao.maps.load(function() {
-          var mapEl = document.getElementById('map');
+          mapWrapEl = document.getElementById('mapWrap');
+          mapEl = document.getElementById('map');
           map = new kakao.maps.Map(mapEl, {
             center: new kakao.maps.LatLng(37.8228, 128.1555),
             level: 8,
           });
           places = new kakao.maps.services.Places();
 
-          // WebView 컨테이너 크기가 회전·키보드 등으로 바뀌면 지도 캔버스가 이전 크기에
-          // 잘린 채로 남을 수 있어서, 크기 변화가 감지되면 relayout()으로 다시 맞춰준다.
-          var lastW = mapEl.clientWidth, lastH = mapEl.clientHeight;
+          // WebView 컨테이너 크기가 회전·키보드 등으로 바뀌면 지도 캔버스가 이전 크기에 잘린 채로
+          // 남을 수 있어서, 크기 변화가 감지되면 relayout()으로 다시 맞춰준다. #mapWrap(실제 화면
+          // 크기)을 관찰해야 한다 — 주행 중엔 #map 자신을 우리가 대각선 크기로 직접 키우므로
+          // #map 자신의 크기 변화를 관찰하면 그 변화까지 리사이즈로 오인한다.
+          var lastW = mapWrapEl.clientWidth, lastH = mapWrapEl.clientHeight;
           var ro = new ResizeObserver(function() {
-            if (mapEl.clientWidth === lastW && mapEl.clientHeight === lastH) return;
-            lastW = mapEl.clientWidth; lastH = mapEl.clientHeight;
-            var center = map.getCenter();
-            map.relayout();
-            map.setCenter(center);
+            if (mapWrapEl.clientWidth === lastW && mapWrapEl.clientHeight === lastH) return;
+            lastW = mapWrapEl.clientWidth; lastH = mapWrapEl.clientHeight;
+            if (navigating) sizeMapDiagonal(); else sizeMapNormal();
+            relayoutKeepCenter();
           });
-          ro.observe(mapEl);
+          ro.observe(mapWrapEl);
 
           post({ type: 'ready' });
         });

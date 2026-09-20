@@ -9,7 +9,10 @@ function labelTransform(x0, y0) {
   return `translate(${x0} ${y0}) scale(1 ${1 / STRETCH}) translate(${-x0} ${-y0})`
 }
 
-export default function GangwonMap({ selected, onSelect }) {
+// regionGrades: { [지역명]: 'green'|'amber'|'red' }, regionCounts: { [지역명]: number } —
+// 안심 코스 API 기반 실측값이 있으면 그걸로 덮어쓰고, 없으면(계산 전이거나 실패) 기존 정적
+// REGIONS 값을 그대로 쓴다.
+export default function GangwonMap({ selected, onSelect, regionGrades, regionCounts }) {
   return (
     <svg
       viewBox={`0 0 ${GANGWON_VIEWBOX.w} ${GANGWON_VIEWBOX.h}`}
@@ -18,7 +21,7 @@ export default function GangwonMap({ selected, onSelect }) {
       {/* 1st pass: 시군 경계 */}
       <g>
         {REGIONS.map(r => {
-          const m = GRADE[r.grade]
+          const m = GRADE[regionGrades?.[r.name] ?? r.grade]
           const geo = GANGWON_GEO[r.name]
           if (!geo) return null
           const isSel = selected === r.name
@@ -35,7 +38,7 @@ export default function GangwonMap({ selected, onSelect }) {
               onMouseEnter={e => { if (!isSel) e.currentTarget.style.filter='brightness(1.1)' }}
               onMouseLeave={e => { if (!isSel) e.currentTarget.style.filter='none' }}
             >
-              <title>{r.name} · 터널 {r.tunnels}</title>
+              <title>{r.name} · 터널 {regionCounts?.[r.name] ?? r.tunnels}</title>
             </path>
           )
         })}
@@ -44,13 +47,14 @@ export default function GangwonMap({ selected, onSelect }) {
       {/* 2nd pass: 라벨을 모든 도형 위에 그려서, 이웃 시군과 겹쳐도 항상 보이게 함 */}
       <g style={{ pointerEvents:'none' }}>
         {REGIONS.map(r => {
-          const m = GRADE[r.grade]
+          const m = GRADE[regionGrades?.[r.name] ?? r.grade]
           const geo = GANGWON_GEO[r.name]
           if (!geo) return null
           const isSel = selected === r.name
           const color = m.color
           const nameY = geo.labelY - 2
           const tunnelY = geo.labelY + 12
+          const tunnelCount = regionCounts?.[r.name] ?? r.tunnels
           return (
             <g key={r.name}>
               <g transform={labelTransform(geo.labelX, nameY)}>
@@ -63,7 +67,7 @@ export default function GangwonMap({ selected, onSelect }) {
                 <text
                   x={geo.labelX} y={tunnelY} textAnchor="middle" fontSize={10.5}
                   fill={color} opacity={isSel ? .9 : .75} stroke="#fff" strokeWidth={2.4} strokeLinejoin="round" paintOrder="stroke"
-                >터널 {r.tunnels}</text>
+                >터널 {tunnelCount}</text>
               </g>
             </g>
           )

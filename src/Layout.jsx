@@ -4,7 +4,6 @@ import { getSession } from './lib/auth.js'
 const NAV = [
   { to: '/home',    label: '홈' },
   { to: '/courses', label: '안심 코스' },
-  { to: '/spots',   label: '관광지 추천' },
   { to: '/tunnels', label: '터널 백과' },
   { to: '/route',   label: '길찾기' },
   { to: '/my',      label: '마이페이지' },
@@ -12,7 +11,8 @@ const NAV = [
 
 export default function Layout() {
   const nav = useNavigate()
-  if (!getSession()) return <Navigate to="/login" replace />
+  const session = getSession()
+  if (!session) return <Navigate to="/login" replace />
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
       <header style={{
@@ -76,7 +76,7 @@ export default function Layout() {
               width:38, height:38, borderRadius:'50%', background:'var(--primary-bg)',
               display:'flex', alignItems:'center', justifyContent:'center',
               fontWeight:700, color:'var(--primary)', fontSize:15,
-            }}>서</div>
+            }}>{session.name?.[0] ?? '?'}</div>
           </div>
         </div>
       </header>

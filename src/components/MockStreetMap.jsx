@@ -44,6 +44,7 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
   const [resolvedMarkers, setResolvedMarkers] = useState([])
   const [routePath, setRoutePath] = useState(null) // Valhalla가 준 실도로 좌표 [[lat,lng],...]
   const [tunnelSegs, setTunnelSegs] = useState([]) // 경로 위 터널 구간 [{ names, lengthM, path }]
+  const wrapRef = useRef(null)
   const containerRef = useRef(null)
   const mapObjRef = useRef({})
   const onRouteRef = useRef(onRoute)
@@ -74,15 +75,18 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
 
   // 실제 GPS 좌표를 받으면 지도 중심을 옮긴다 (경로 마커가 없을 때만).
   // 단, 내비 주행 중(navPosition 제어)에는 GPS 좌표가 지도 중심을 뺏어가지 않게 한다.
+  // kakaoReady를 의존성에 넣어야 한다 — GPS 조회(getCurrentPosition)가 카카오맵 SDK 로딩보다
+  // 먼저 끝나는 경우가 흔한데, 그때는 이 effect가 "지도 아직 없음" 상태로 한 번 실행되고 끝나
+  // coords가 그 뒤로 안 바뀌면 지도가 준비돼도 다시 실행되지 않아 위치가 영영 안 찍혔다.
   useEffect(() => {
     const { kakao, map } = mapObjRef.current
     if (!coords || !kakao || !map || navigatingRef.current) return
     const pos = new kakao.maps.LatLng(coords.lat, coords.lng)
     if (!markers?.length) map.setCenter(pos)
-  }, [coords, markerQuery])
+  }, [coords, markerQuery, kakaoReady])
 
   // 현재 위치 하이라이트 — myLocation prop을 켠 화면(홈 화면)에서만 빨간 레이저 포인트로 표시.
-  // 길찾기·경로 상세 등 나머지 화면에서는 그리지 않는다.
+  // 길찾기·경로 상세 등 나머지 화면에서는 그리지 않는다. (kakaoReady 이유는 위 effect와 동일)
   useEffect(() => {
     const { kakao, map } = mapObjRef.current
     if (!kakao || !map) return
@@ -106,19 +110,57 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
     } else {
       mapObjRef.current.myLocOverlay.setPosition(pos)
     }
-  }, [coords, myLocation])
+  }, [coords, myLocation, kakaoReady])
 
-  // 주행 중 현재 위치 — 실제 내비처럼 진행 방향을 가리키는 화살표 마커가 경로를 따라 움직이고,
-  // 지도가 부드럽게 따라가며 회전 지점에 가까워지면 자동으로 확대된다.
+  // 헤딩업(진행 방향이 항상 화면 위) 회전 시 지도 컨테이너(containerRef)를 정사각형 대각선
+  // 크기로 키워 wrapRef(overflow:hidden, 실제 화면 크기) 안에 중앙 정렬한다 — 그래야 어느
+  // 각도로 돌려도 모서리에 빈 공간이 드러나지 않는다. 평소(비주행)에는 원래 크기로 되돌려
+  // 불필요한 타일 로딩을 피한다.
+  const sizeMapDiagonal = () => {
+    const wrap = wrapRef.current, el = containerRef.current
+    if (!wrap || !el) return
+    const w = wrap.clientWidth, h = wrap.clientHeight
+    const diag = Math.ceil(Math.sqrt(w * w + h * h))
+    el.style.width = `${diag}px`; el.style.height = `${diag}px`
+    el.style.left = `${(w - diag) / 2}px`; el.style.top = `${(h - diag) / 2}px`
+  }
+  const sizeMapNormal = () => {
+    const el = containerRef.current
+    if (!el) return
+    el.style.width = '100%'; el.style.height = '100%'
+    el.style.left = '0px'; el.style.top = '0px'
+  }
+  const relayoutKeepCenter = map => {
+    const center = map.getCenter()
+    map.relayout()
+    map.setCenter(center)
+  }
+
+  // 주행 중 현재 위치 — 헤딩업 방식. 화살표는 항상 화면 하단 중앙에 고정해 위를 가리키고, 대신
+  // 지도(containerRef) 자체를 진행 방향의 반대로 돌려서 "지금 가는 방향 = 화면 위"가 되게 한다.
+  // 실제 내비 앱들과 같은 방식 — 카카오맵 SDK엔 지도 자체 회전 API가 없어서 지도 div를 CSS로
+  // 통째로 돌리는 방식을 쓴다(지도 위 지명 라벨도 같이 도는 건 감수한다).
   useEffect(() => {
     const { kakao, map } = mapObjRef.current
-    if (!navPosition || !kakao || !map) return
+    if (!kakao || !map) return
+    if (!navPosition) {
+      if (navigatingRef.current) {
+        navigatingRef.current = false
+        if (containerRef.current) containerRef.current.style.transform = 'rotate(0deg)'
+        sizeMapNormal()
+        relayoutKeepCenter(map)
+      }
+      return
+    }
     const first = !navigatingRef.current
     navigatingRef.current = true
     const pos = new kakao.maps.LatLng(navPosition.lat, navPosition.lng)
 
     if (first) {
       mapObjRef.current.myLocOverlay?.setMap(null) // 내비 시작 시 홈 화면용 위치 하이라이트 정리(있었다면)
+      sizeMapDiagonal()
+      relayoutKeepCenter(map)
+      if (containerRef.current) containerRef.current.style.transition = 'transform .45s ease'
       const el = document.createElement('div')
       el.style.cssText = 'width:46px;height:46px;border-radius:50%;background:#fff;box-shadow:0 4px 16px rgba(15,50,90,.45);display:flex;align-items:center;justify-content:center;border:2.5px solid #1A6DE3'
       el.innerHTML = '<svg width="28" height="28" viewBox="0 0 24 24" style="transition:transform .45s ease"><path d="M12 2.5 L18.5 19.5 L12 15.8 L5.5 19.5 Z" fill="#1A6DE3"/></svg>'
@@ -128,11 +170,17 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
       mapObjRef.current.navArrowEl = el.firstChild
     }
     mapObjRef.current.navOverlay.setPosition(pos)
+    // 지도 자체가 -heading만큼 돌기 때문에, 그 안에 얹힌 화살표도 같이 돌아 보인다 — 화살표에
+    // +heading을 걸어 상쇄하면 화면상으로는 항상 정확히 위를 가리키게 된다.
     if (navPosition.heading != null && mapObjRef.current.navArrowEl) {
       mapObjRef.current.navArrowEl.style.transform = `rotate(${navPosition.heading}deg)`
     }
+    if (navPosition.heading != null && containerRef.current) {
+      containerRef.current.style.transform = `rotate(${-navPosition.heading}deg)`
+    }
     if (navPosition.zoom && map.getLevel() !== navPosition.zoom) map.setLevel(navPosition.zoom, { animate: true })
-    // 실제 내비처럼 차량이 화면 하단에 오도록, 지도 중심을 진행 방향 앞쪽으로 당긴다
+    // 실제 내비처럼 차량이 화면 하단에 오도록, 지도 중심을 진행 방향 앞쪽으로 당긴다. 위 회전과
+    // 합쳐지면 헤딩과 무관하게 항상 화면 아래쪽에 차량이, 위쪽에 앞으로 갈 길이 보인다.
     const AHEAD_M = { 3: 130, 4: 260, 5: 520, 7: 1500 }
     const aheadM = AHEAD_M[navPosition.zoom] ?? 260
     const rad = ((navPosition.heading ?? 0) * Math.PI) / 180
@@ -306,12 +354,23 @@ export default function MockStreetMap({ children, markers, showPath = false, rou
   if (KAKAO_KEY && !kakaoError) {
     return (
       <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 320 }}>
-        <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
+        {/* wrapRef: 실제 화면 크기만큼만 잘라 보여준다(overflow:hidden). 헤딩업 회전 시
+            containerRef를 대각선 크기로 키워 이 안에서 돌려도 모서리에 빈 공간이 안 보이게 한다. */}
+        <div ref={wrapRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
+          <div ref={containerRef} style={{ position: 'absolute', width: '100%', height: '100%', left: 0, top: 0 }} />
+        </div>
         {/* 카카오맵 내부 레이어가 자체 z-index를 갖고 있어, 오버레이 UI를 명시적으로 그 위에 쌓는다.
             지도 빈 공간에서는 그대로 드래그/줌이 되도록 이 래퍼 자체는 클릭을 통과시키고,
             실제 버튼/입력창에서만 다시 pointerEvents:auto로 되살린다. */}
         <div style={{ position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none' }}>
           {markerBadge}
+          {/* 실제 카카오맵 경로에는(SVG 목업과 달리) 위치 실패를 알려주는 표시가 아예 없어서,
+              권한 거부·조회 실패 시 사용자가 "왜 안 찍히는지" 알 방법이 없었다. */}
+          {myLocation && geoError && (
+            <div style={{ position: 'absolute', left: 14, bottom: 14, background: 'rgba(255,255,255,.95)', borderRadius: 8, padding: '7px 11px', fontSize: 11.5, color: '#A53E33', fontWeight: 600, boxShadow: '0 1px 4px rgba(20,40,60,.15)' }}>
+              내 위치를 확인할 수 없어요 — 브라우저 주소창의 위치 권한을 허용해주세요
+            </div>
+          )}
           {children}
         </div>
       </div>

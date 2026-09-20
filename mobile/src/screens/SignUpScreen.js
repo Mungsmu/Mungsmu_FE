@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { View, Text, TextInput, Pressable, ScrollView, StyleSheet } from 'react-native'
 import { useNavigation } from '@react-navigation/native'
 import { COLORS, RADIUS } from '../theme'
-import { findUser, saveUser } from '../lib/auth'
+import { checkUsername, sendSmsCode, verifySmsCode, signup } from '../lib/auth'
 
 const RELATIONS = ['부모', '배우자', '자녀', '형제자매', '기타']
 
@@ -17,32 +17,55 @@ export default function SignUpScreen() {
   const [code, setCode] = useState('')
   const [codeSent, setCodeSent] = useState(false)
   const [codeError, setCodeError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   const set = (k) => (v) => {
     setForm(f => ({ ...f, [k]: v }))
     if (k === 'userId') setIdCheck(null)
   }
 
-  const checkId = () => {
+  const checkId = async () => {
     if (!form.userId.trim()) return
     setIdCheck('checking')
-    setTimeout(async () => setIdCheck((await findUser(form.userId.trim())) ? 'dup' : 'ok'), 500)
+    try {
+      const available = await checkUsername(form.userId.trim())
+      setIdCheck(available ? 'ok' : 'dup')
+    } catch (e) {
+      setIdCheck(null)
+      setCodeError(e.message)
+    }
   }
 
+  // 비밀번호 규칙은 백엔드(SignupRequest)와 동일: 영문+숫자 포함 8자 이상
+  const passwordOk = /^(?=.*[A-Za-z])(?=.*\d).{8,}$/.test(form.password)
   const canSubmitForm = form.name.trim() && form.phone.trim() && form.email.trim()
     && form.userId.trim() && idCheck === 'ok'
-    && form.password.length >= 8 && form.password === form.passwordConfirm
+    && passwordOk && form.password === form.passwordConfirm
     && form.guardianName.trim() && form.guardianPhone.trim()
 
-  const sendCode = () => { setCodeSent(true); setCodeError('') }
+  const sendCode = async () => {
+    setCodeError('')
+    try {
+      await sendSmsCode(form.phone.trim())
+      setCodeSent(true)
+    } catch (e) {
+      setCodeError(e.message)
+    }
+  }
+
   const verifyCode = async () => {
     if (code.trim().length !== 6) { setCodeError('6자리 인증번호를 입력해주세요'); return }
-    await saveUser({
-      userId: form.userId.trim(), password: form.password, name: form.name.trim(),
-      phone: form.phone.trim(), email: form.email.trim(),
-      guardianName: form.guardianName.trim(), guardianPhone: form.guardianPhone.trim(), relation: form.relation,
-    })
-    setStep('done')
+    setSubmitting(true)
+    setCodeError('')
+    try {
+      await verifySmsCode(form.phone.trim(), code.trim())
+      await signup(form)
+      setStep('done')
+    } catch (e) {
+      setCodeError(e.message)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   if (step === 'done') {
@@ -79,11 +102,11 @@ export default function SignUpScreen() {
               <Text style={styles.smsBtnText}>{codeSent ? '재전송' : '인증번호 받기'}</Text>
             </Pressable>
           </View>
-          {codeSent && <Text style={styles.successText}>✓ 인증번호가 발송됐어요 (테스트용: 아무 6자리 입력)</Text>}
+          {codeSent && <Text style={styles.successText}>✓ 인증번호가 발송됐어요 (데모: 백엔드 서버 콘솔에서 확인)</Text>}
           {codeError ? <Text style={styles.errorText}>{codeError}</Text> : null}
 
-          <Pressable onPress={verifyCode} disabled={!codeSent} style={[styles.primaryBtn, { marginTop: 16 }, !codeSent && { opacity: 0.4 }]}>
-            <Text style={styles.primaryBtnText}>인증 완료</Text>
+          <Pressable onPress={verifyCode} disabled={!codeSent || submitting} style={[styles.primaryBtn, { marginTop: 16 }, (!codeSent || submitting) && { opacity: 0.4 }]}>
+            <Text style={styles.primaryBtnText}>{submitting ? '가입 중...' : '인증 완료'}</Text>
           </Pressable>
         </View>
       </View>
@@ -117,7 +140,7 @@ export default function SignUpScreen() {
         <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
           <View style={{ flex: 1 }}>
             <Text style={styles.label}>비밀번호</Text>
-            <TextInput value={form.password} onChangeText={set('password')} placeholder="8자 이상" placeholderTextColor={COLORS.textMuted} style={styles.input} secureTextEntry />
+            <TextInput value={form.password} onChangeText={set('password')} placeholder="영문+숫자 8자 이상" placeholderTextColor={COLORS.textMuted} style={styles.input} secureTextEntry />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.label}>비밀번호 확인</Text>

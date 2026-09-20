@@ -7,6 +7,7 @@ import { loadKakaoMaps, resolvePlace, haversineM, coordToAddress } from '../lib/
 import { fetchRoute, traceTunnels } from '../lib/route.js'
 import { findGangwonTunnel, nearestGangwonTunnel } from '../lib/tunnelGeo.js'
 import { getCurrentPosition } from '../lib/geolocation.js'
+import { recordRouteChoice } from '../lib/tunnelStats.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const RECENT = ['속초 해수욕장', '양양 낙산사', '강릉 경포해변']
@@ -544,16 +545,19 @@ export default function RoutePage() {
           )}
 
           <button
-            onClick={() => navigate('/navigating', {
-              state: {
-                origin, dest, durationMin: route.durationMin, distanceKm: route.distanceKm,
-                waypoints, originPlace: route.origin, destPlace: route.dest,
-                // 내비가 같은 성격의 경로를 달리도록 선택값을 그대로 넘긴다. 터널 목록은 내비가
-                // 실제 주행 경로에서 다시 실측하므로(경유지·재탐색으로 달라질 수 있다) 참고용이다.
-                routeProfile: selectedRoute,
-                ...(selectedRoute === 'shortest' ? { tunnels } : {}),
-              },
-            })}
+            onClick={() => {
+              recordRouteChoice(selectedRoute)
+              navigate('/navigating', {
+                state: {
+                  origin, dest, durationMin: route.durationMin, distanceKm: route.distanceKm,
+                  waypoints, originPlace: route.origin, destPlace: route.dest,
+                  // 내비가 같은 성격의 경로를 달리도록 선택값을 그대로 넘긴다. 터널 목록은 내비가
+                  // 실제 주행 경로에서 다시 실측하므로(경유지·재탐색으로 달라질 수 있다) 참고용이다.
+                  routeProfile: selectedRoute,
+                  ...(selectedRoute === 'shortest' ? { tunnels } : {}),
+                },
+              })
+            }}
             style={{
               marginTop:20, height:44, borderRadius:11, width:'100%', fontWeight:800, fontSize:13.5, cursor:'pointer',
               background: selectedRoute === 'avoid' ? '#14807A' : '#D45B4E', color:'#fff',

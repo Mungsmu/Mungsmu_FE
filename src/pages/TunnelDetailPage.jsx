@@ -1,5 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { TUNNELS, DIFF } from '../data/mock.js'
+import { DIFF } from '../data/mock.js'
+import { GANGWON_TUNNELS } from '../data/gangwonTunnels.js'
 import MockStreetMap from '../components/MockStreetMap.jsx'
 
 const DIFF_META = {
@@ -13,7 +14,7 @@ const DIFF_META = {
 export default function TunnelDetailPage() {
   const { id } = useParams()
   const nav = useNavigate()
-  const t = TUNNELS.find(t => t.id === id)
+  const t = GANGWON_TUNNELS.find(t => t.id === id)
   if (!t) return <p style={{ padding:60, textAlign:'center', color:'var(--text-muted)' }}>터널 정보를 찾을 수 없어요.</p>
 
   const dm = DIFF_META[t.diff]
@@ -42,7 +43,7 @@ export default function TunnelDetailPage() {
       </div>
 
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:13, marginBottom:32 }}>
-        {[['길이',`${(t.lengthM/1000).toFixed(2)}km`],['차로수',`왕복 ${t.lanes}차로`],['환기 등급',t.ventGrade],['평균 통과',avgTime],['정체 빈도',t.congestion],['공황 난이도',`${t.diff} / 5단계`]].map(([k,v]) => (
+        {[['길이',`${(t.lengthM/1000).toFixed(2)}km`],['차로수',`왕복 ${t.lanes}차로`],['폭',`${t.widthM}m`],['평균 통과',avgTime],['높이',`${t.heightM}m`],['공황 난이도',`${t.diff} / 5단계`]].map(([k,v]) => (
           <div key={k} style={{ background:'var(--bg-surface)', border:'1px solid var(--border-light)', borderRadius:'var(--r-lg)', padding:'18px 20px' }}>
             <span style={{ fontSize:12, color:'var(--text-muted)', display:'block', marginBottom:6 }}>{k}</span>
             <span style={{ fontSize:22, fontWeight:800, color:'#243C42', letterSpacing:'-.3px' }}>{v}</span>
@@ -51,7 +52,9 @@ export default function TunnelDetailPage() {
       </div>
 
       <div style={{ borderRadius:'var(--r-xl)', height:280, overflow:'hidden', border:'1px solid var(--border-light)' }}>
-        <MockStreetMap markers={[{ id:t.id, label:t.name, query:t.name, color:dc }]} />
+        {/* 실제 데이터셋에 진입 좌표(startLat/startLng)가 있어서, 이름으로 지오코딩할 필요 없이
+            바로 정확한 위치에 마커를 찍는다. */}
+        <MockStreetMap markers={[{ id:t.id, label:t.name, lat:t.startLat, lng:t.startLng, color:dc }]} />
       </div>
     </div>
   )

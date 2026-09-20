@@ -207,7 +207,7 @@ export default function NavigatingPage() {
     if (tunnelCompletedRef.current) return
     tunnelCompletedRef.current = true
     const sec = (Date.now() - (tunnelEnterTimeRef.current ?? Date.now())) / 1000
-    recordTunnelPass()
+    recordTunnelPass(t.diff)
     speak(`${t.name}을 통과하셨습니다. 경로 안내를 이어갑니다.`, { priority: SpeechPriority.BREATH })
     setTunnelPct(100)
     setPassedTunnels(prev => [...prev, { name: t.name, diff: t.diff, sec }])
@@ -509,6 +509,15 @@ export default function NavigatingPage() {
   const approachingSoon = !!nextTunnel && tunnelState.approach && !nextTunnel.dismissed && !arrived
   const distanceLeftM = tunnelState?.distM ?? null
 
+  // 터널 배너(TunnelBanner)는 화면 상단에 절대좌표로 뜨는데, 턴바이턴 안내 바(TurnPanel)도
+  // 같은 화면 상단을 쓴다 — 터널이 연달아 있는 경로는 "다음 터널 접근" 상태(approachingSoon)가
+  // 아니어도 TurnPanel이 계속 떠 있어서, 고정된 top 값만 쓰면 배너가 그 위에 겹쳐 그려졌다
+  // (사용자 리포트: 안내 문구가 겹쳐서 잘려 보임). TurnPanel이 떠 있으면 그 실제 높이만큼,
+  // 서브바(다음 안내)까지 있으면 더 크게 내려서 배치한다.
+  const turnPanelVisible = !!nav?.man && !arrived && !approachingSoon
+  const turnPanelHasSubBar = turnPanelVisible && nav.man2 != null && !rerouting
+  const bannerTop = turnPanelVisible ? (turnPanelHasSubBar ? 145 : 110) : 64
+
   const totalPassSec = passedTunnels.reduce((a, t) => a + (t.sec ?? 0), 0)
   const breathBorderColor = breathPhase === 'exhale' ? '212,91,78' : '46,158,107' // 내쉬기=빨강, 들이마시기=초록
   const breathThickness = Math.round(breathFrac * 30)
@@ -575,11 +584,12 @@ export default function NavigatingPage() {
 
         {/* 동반 모드 오버레이 — 상단 가운데 배너(10m 전 안내 / 보호자 호출 / 통과 임박)와 좌측 게이지 */}
         {tunnelPhase === 'approach' ? (
-          <TunnelBanner title="터널 진입 10m 전" subtitle="곧 동반모드가 시작됩니다" />
+          <TunnelBanner top={bannerTop} title="터널 진입 10m 전" subtitle="곧 동반모드가 시작됩니다" />
         ) : tunnelExitWarned ? (
-          <TunnelBanner title="터널 통과 10m 전" subtitle="곧 도착해요, 조금만 더 힘내요" />
+          <TunnelBanner top={bannerTop} title="터널 통과 10m 전" subtitle="곧 도착해요, 조금만 더 힘내요" />
         ) : breathing ? (
           <TunnelBanner
+            top={bannerTop}
             title={guardianState === 'calling' ? '보호자 호출 중...' : '보호자 호출'}
             subtitle={guardianState === 'sent' ? '- 메시지 전송 완료 -' : '탭하여 보호자를 호출해요'}
             onClick={callGuardian}

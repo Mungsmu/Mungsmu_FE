@@ -3,6 +3,7 @@ import { useNavigation, useRoute } from '@react-navigation/native'
 import MockMap from '../components/MockMap'
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
 import { MOCK_RESULT, DEFAULT_TUNNEL } from '../data/routeMock'
+import { recordRouteChoice } from '../lib/tunnelStats'
 
 // 서울양양고속도로처럼 500m 이상 터널이 실제로 수십 개인 구간도 있어, 지도 마커는
 // 상위 N개만 보여주고 나머지는 총 개수(result.tunnelCount)로만 표시한다.
@@ -15,15 +16,18 @@ export default function RouteDetailScreen() {
   const result = fullResult[selectedRoute]
   const tunnels = result.tunnels?.length ? result.tunnels : (isAvoid ? [] : [DEFAULT_TUNNEL])
 
-  const start = () => nav.navigate('Navigating', {
-    origin, dest, durationMin: result.durationMin, distanceKm: result.distanceKm,
-    waypoints,
-    path: result.path, maneuvers: result.maneuvers, shapes: result.shapes,
-    originPlace: result.origin, destPlace: result.dest,
-    // 내비가 같은 성격의 경로를 달리도록 선택값을 그대로 넘긴다
-    routeProfile: isAvoid ? 'avoid' : 'shortest',
-    ...(isAvoid ? {} : { tunnels }),
-  })
+  const start = () => {
+    recordRouteChoice(isAvoid ? 'avoid' : 'shortest')
+    nav.navigate('Navigating', {
+      origin, dest, durationMin: result.durationMin, distanceKm: result.distanceKm,
+      waypoints,
+      path: result.path, maneuvers: result.maneuvers, shapes: result.shapes,
+      originPlace: result.origin, destPlace: result.dest,
+      // 내비가 같은 성격의 경로를 달리도록 선택값을 그대로 넘긴다
+      routeProfile: isAvoid ? 'avoid' : 'shortest',
+      ...(isAvoid ? {} : { tunnels }),
+    })
+  }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 20 }}>
