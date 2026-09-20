@@ -7,13 +7,16 @@ import TunnelGauge from '../components/TunnelGauge.jsx'
 import TunnelProgressCard from '../components/TunnelProgressCard.jsx'
 import { loadKakaoMaps, resolvePlace, haversineM } from '../lib/kakaoMap.js'
 import { cumulativeDistM, fetchRoute, traceTunnels } from '../lib/route.js'
-import { speak } from '../lib/speech.js'
+import { speak, stopSpeech, SpeechPriority } from '../lib/speech.js'
 import { recordTunnelPass } from '../lib/tunnelStats.js'
 import { resolveTunnelEndpoints } from '../lib/tunnelGeo.js'
 
 const KAKAO_KEY = import.meta.env.VITE_KAKAO_MAP_KEY
 const DEFAULT_TUNNEL = TUNNELS.find(t => t.name === '미시령터널')
 const BREATH_MS = 5000
+// 호흡 안내 음성은 매 사이클(5초)마다 말하지 않는다 — 처음 한 세트로 리듬만 알려주고, 긴 터널에서는
+// 이 거리(m)만큼 더 갈 때마다 한 번씩만 다시 말해 리듬을 잃지 않게 한다.
+const BREATH_VOICE_INTERVAL_M = 1000
 const EXIT_WARN_M = 10
 const DEMO_TICK_MS = 250     // 데모 진행 타이머 간격 — 1초 단위는 카메라가 뚝뚝 끊겨 보여서 촘촘하게
 const APPROACH_MS = 5000 // 10m 전 팝업을 보여주는 시간 — 이 동안은 아직 호흡 가이드가 시작되지 않는다
@@ -27,9 +30,11 @@ const TUNNEL_PASS_BEARINGS = [0, 45, 90, 135]
 // entrySpeedKmh를 모르면(헤더 "동반 모드" 버튼으로 바로 들어온 튜토리얼 등) 기본값을 쓰고, 정차·서행
 // 중 진입했거나 비정상적으로 빠른 값이 들어와도 터널 안에서 하염없이 멈추거나 순식간에 끝나버리지
 // 않도록 상하한을 둔다.
-const DEFAULT_PASS_KMH = 80
-const MIN_PASS_KMH = 30
-const MAX_PASS_KMH = 110
+// 튜토리얼은 실제 주행이 아니라 짧게 체험하는 용도라, 실제 평균 속도(NavigatingPage와 동일)의
+// 2배로 통과 시간을 잡아 지루하지 않게 한다.
+const DEFAULT_PASS_KMH = 160
+const MIN_PASS_KMH = 60
+const MAX_PASS_KMH = 220
 
 export default function CompanionPage() {
   const nav = useNavigate()
@@ -51,6 +56,7 @@ export default function CompanionPage() {
   const exitWarnedRef = useRef(false)
   const demoRouteRef = useRef(null) // { path, cum, totalM } — 주행 카메라가 따라갈 경로
   const completedRef = useRef(false)
+  const traveledMRef = useRef(0) // 터널 진입 후 이동거리(m) — 호흡 안내 음성을 얼마나 자주 말할지 판단용
 
   // 0) 터널 구간 경로 확보. 우선순위:
   //   ① RoutePage에서 실도로 경로를 계산할 때(computeRouteResult) 이미 traceTunnels로 검증해서
@@ -64,6 +70,10 @@ export default function CompanionPage() {
   //      여유)만 잘라서 쓴다 — 앵커점이 도로에서 멀리 떨어져 있으면 경로 전체가 수십 km짜리 우회로가
   //      될 수 있어서, 우회 구간 없이 터널 자체를 주행 카메라 배경으로 쓰기 위함.
   // 셋 다 실패하면(지오코딩 불가·일치하는 터널 없음 등) tunnelPath를 null로 두어 주행 카메라를 표시하지 않는다.
+
+  // 페이지를 나가면(나가기 버튼·뒤로가기) 재생 중이던 안내 음성을 바로 끊는다.
+  useEffect(() => () => stopSpeech(), [])
+
   useEffect(() => {
     let cancelled = false
     setTunnelPath(null)
@@ -128,33 +138,40 @@ export default function CompanionPage() {
     }
   }, [])
 
-  // 2) 호흡 가이드: 5초 내쉬기 → 5초 들이마시기를 터널을 통과할 때까지 계속 반복한다.
-  // 음성이 실제로 끝난 시점부터 5초를 세기 시작해서, 문장이 채 끝나기도 전에 테두리가 먼저 차오르는
-  // 어긋남 없이 "안내 음성 → 그 다음 5초간 호흡" 순서가 항상 지켜지도록 한다.
+  // 2) 호흡 가이드: 5초 내쉬기 → 5초 들이마시기를 터널을 통과할 때까지 계속 반복한다. 예전에는
+  // 음성이 끝난 시점부터 5초를 셌는데, 그러면 한 구간이 "음성 길이 + 5초"가 되어 실제로는 5초보다
+  // 길어지고 매 구간마다 그 차이가 쌓여 갈수록 뒤로 밀렸다. 음성은 구간 시작과 동시에 재생하고
+  // 카운트도 그 즉시 시작해서, 음성 길이와 무관하게 항상 정확히 5초 간격이 유지되게 한다.
+  //
+  // 음성은 매 사이클(5초)마다 말하지 않는다 — 처음 한 세트(내쉬기+들이마시기)로 리듬을 알려준 뒤로는
+  // 시각(테두리·게이지)만으로 유지하고, 긴 터널에서는 1km 갈 때마다 한 번씩만 다시 말한다.
   useEffect(() => {
     if (phase !== 'breathing') return
     let cancelled = false
     let tickTimer = null
+    let cycleCount = 0
+    let lastVoicedAtM = 0
 
     const runPhase = ph => {
       if (cancelled) return
       setBreathPhase(ph)
       setBreathFrac(0)
-      speak(ph === 'exhale' ? '5초간 숨을 내쉬세요.' : '5초간 숨을 들이마시세요.', {
-        onend: () => {
-          if (cancelled) return
-          phaseStartRef.current = Date.now()
-          tickTimer = setInterval(() => {
-            const elapsed = Date.now() - phaseStartRef.current
-            if (elapsed >= BREATH_MS) {
-              clearInterval(tickTimer)
-              runPhase(ph === 'exhale' ? 'inhale' : 'exhale')
-            } else {
-              setBreathFrac(elapsed / BREATH_MS)
-            }
-          }, 100)
-        },
-      })
+      cycleCount += 1
+      const intoM = traveledMRef.current
+      if (cycleCount <= 2 || intoM - lastVoicedAtM >= BREATH_VOICE_INTERVAL_M) {
+        lastVoicedAtM = intoM
+        speak(ph === 'exhale' ? '5초간 숨을 내쉬세요.' : '5초간 숨을 들이마시세요.', { priority: SpeechPriority.BREATH })
+      }
+      phaseStartRef.current = Date.now()
+      tickTimer = setInterval(() => {
+        const elapsed = Date.now() - phaseStartRef.current
+        if (elapsed >= BREATH_MS) {
+          clearInterval(tickTimer)
+          runPhase(ph === 'exhale' ? 'inhale' : 'exhale')
+        } else {
+          setBreathFrac(elapsed / BREATH_MS)
+        }
+      }, 100)
     }
     runPhase('exhale')
 
@@ -169,7 +186,7 @@ export default function CompanionPage() {
     if (completedRef.current) return
     completedRef.current = true
     recordTunnelPass()
-    speak('터널을 통과하셨습니다.')
+    speak('터널을 통과하셨습니다.', { priority: SpeechPriority.BREATH })
     setPct(100)
     setPhase('done')
   }
@@ -185,11 +202,12 @@ export default function CompanionPage() {
     const passSpeedMps = Math.min(MAX_PASS_KMH, Math.max(MIN_PASS_KMH, entrySpeedKmh || DEFAULT_PASS_KMH)) / 3.6
 
     const applyProgress = traveledM => {
+      traveledMRef.current = traveledM
       setPct(Math.min(100, Math.max(0, (traveledM / lengthM) * 100)))
       if (traveledM >= warnAtM && !exitWarnedRef.current) {
         exitWarnedRef.current = true
         setExitWarned(true)
-        speak('터널 통과 10미터 전.')
+        speak('터널 통과 10미터 전.', { priority: SpeechPriority.BREATH })
       }
       if (traveledM >= lengthM) finish()
     }

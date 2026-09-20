@@ -11,7 +11,7 @@ import { TurnPanel, HazardWidget, SummaryBar, fmtDistM, fmtClock12 } from '../co
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
 import { resolvePlace, haversineM, hasKakaoKey } from '../lib/kakaoRest'
 import { cumulativeDistM, maneuverLabel, fetchRoute, traceTunnels } from '../lib/route'
-import { speak } from '../lib/speech'
+import { speak, stopSpeech, SpeechPriority } from '../lib/speech'
 import { recordTunnelPass, getMonthlyPassCount } from '../lib/tunnelStats'
 import { nearestGangwonTunnel, findGangwonTunnel, estimateDiff, tunnelDisplayName, formatTunnelLength, COMPANION_MIN_M } from '../lib/tunnelGeo'
 
@@ -25,7 +25,7 @@ import { nearestGangwonTunnel, findGangwonTunnel, estimateDiff, tunnelDisplayNam
 // UI는 그대로 유지한 채, 호흡 가이드 테두리·좌측 게이지·상단 보호자 호출 배너·터널 통과율만
 // 덧붙였다가 통과하면 그 UI만 사라진다. CompanionScreen은 홈 화면 "동반 모드" 버튼으로 들어오는
 // 실제 여정 없는 튜토리얼 전용으로 그대로 남겨둔다.
-const TUNNEL_APPROACH_M = 400  // 이 거리(m) 안으로 들어오면 상단에 터널 접근 배너를 띄운다
+const TUNNEL_APPROACH_M = 200  // 이 거리(m) 안으로 들어오면 상단에 터널 접근 배너를 띄운다
 const TUNNEL_ANNOUNCE_M = 200  // 이 거리(m)에서 "잠시 후 진입" 음성 안내 + 동반 모드 준비 단계 시작
 const DEMO_SPEED_MPS = 140
 const ON_ROUTE_MAX_M = 250
@@ -42,6 +42,9 @@ const HAZARD_SEEDS = [
   { type: '급정거', frac: 0.85, speed: 50 },
 ]
 const BREATH_MS = 5000
+// 호흡 안내 음성은 매 사이클(5초)마다 말하지 않는다 — 처음 한 세트로 리듬만 알려주고, 긴 터널에서는
+// 이 거리(m)만큼 더 갈 때마다 한 번씩만 다시 말해 리듬을 잃지 않게 한다.
+const BREATH_VOICE_INTERVAL_M = 1000
 const EXIT_WARN_M = 120 // 출구까지 이 거리(m) 안으로 들어오면 "곧 빠져나갑니다" 안내
 // 터널 안은 GPS가 거의 잡히지 않아 실측 진행률을 못 구하는 경우가 대부분이다 — 그때는 진입 직전
 // 속도(navState.speedKmh)와 터널 길이로 통과 소요 시간을 추정해 그 시간에 맞춰 자동으로 통과
@@ -224,7 +227,7 @@ export default function NavigatingScreen() {
     setTunnelExitWarned(false)
     setTunnelPct(0)
     setTunnelPhase('breathing')
-    speak(`${t.name} 진입. 지금부터 호흡을 함께 맞춰볼게요.`)
+    speak(`${t.name} 진입. 지금부터 호흡을 함께 맞춰볼게요.`, { priority: SpeechPriority.BREATH })
   }
 
   const finishTunnel = t => {
@@ -232,7 +235,7 @@ export default function NavigatingScreen() {
     tunnelCompletedRef.current = true
     const sec = (Date.now() - (tunnelEnterTimeRef.current ?? Date.now())) / 1000
     recordTunnelPass()
-    speak(`${t.name}을 통과하셨습니다. 경로 안내를 이어갑니다.`)
+    speak(`${t.name}을 통과하셨습니다. 경로 안내를 이어갑니다.`, { priority: SpeechPriority.BREATH })
     setTunnelPct(100)
     setPassedTunnels(prev => [...prev, { name: t.name, diff: t.diff, sec }])
     setTimeout(() => { setTunnelPhase(null); setTunnelPct(0); setTunnelExitWarned(false); tunnelExitWarnedRef.current = false }, 1600)
@@ -240,10 +243,12 @@ export default function NavigatingScreen() {
 
   // 경로상 누적거리로 "다음/현재 터널"을 갱신하고, 진입·통과 시점에 한 번씩만 부수효과를 낸다.
   const syncTunnels = traveledM => {
-    // 시뮬레이션 주행은 실주행의 6배속이라 400m 접근 구간이 3초도 안 되게 스쳐 지나간다 —
-    // 위험구간 위젯과 같은 방식으로, 실측이 아닐 때는 노출 시간이 일정하도록 거리를 늘려 잡는다.
-    const approachM = gpsLiveRef.current ? TUNNEL_APPROACH_M : Math.max(TUNNEL_APPROACH_M, DEMO_SPEED_MPS * 8)
-    const announceM = gpsLiveRef.current ? TUNNEL_ANNOUNCE_M : Math.max(TUNNEL_ANNOUNCE_M, DEMO_SPEED_MPS * 5)
+    // 터널 접근 배너·음성 안내는 시뮬레이션(데모 주행)이든 실측이든 항상 "진입 200m 전"부터
+    // 뜨도록 고정한다. 예전에는 데모 주행(6배속)에서 배너가 너무 짧게(3초 미만) 스쳐 지나가는
+    // 걸 막으려고 데모일 때만 거리를 늘려(노출 시간 확보) 잡았는데, 그러면 데모로 테스트할 때
+    // "200m 전부터"가 실제로 적용되지 않고 훨씬 이른 지점부터 배너가 뜨는 것처럼 보였다.
+    const approachM = TUNNEL_APPROACH_M
+    const announceM = TUNNEL_ANNOUNCE_M
     for (const t of routeTunnelsRef.current) {
       if (t.passed) continue
       if (traveledM >= t.endM) {                 // 출구 통과
@@ -264,7 +269,7 @@ export default function NavigatingScreen() {
           if (t.endM - traveledM <= EXIT_WARN_M && !tunnelExitWarnedRef.current) {
             tunnelExitWarnedRef.current = true
             setTunnelExitWarned(true)
-            speak('잠시 후 터널을 빠져나갑니다.')
+            speak('잠시 후 터널을 빠져나갑니다.', { priority: SpeechPriority.BREATH })
           }
         }
         return { tunnel: t, distM: 0, inside: true, approach: false }
@@ -311,7 +316,7 @@ export default function NavigatingScreen() {
 
     if (man && man.idx !== lastSpokenManRef.current && distToManM <= 700) {
       lastSpokenManRef.current = man.idx
-      speak(`잠시 후 ${maneuverLabel(man)}입니다.`)
+      speak(`잠시 후 ${maneuverLabel(man)}입니다.`, { priority: SpeechPriority.TURN })
     }
 
     // 터널 진입·통과 판정 (경로상 누적거리 기준 — GPS 실측·시뮬레이션 공통)
@@ -445,31 +450,45 @@ export default function NavigatingScreen() {
 
   useEffect(() => { getMonthlyPassCount().then(setMonthlyCount) }, [])
 
-  // 호흡 가이드: 5초 내쉬기 → 5초 들이마시기를 터널을 통과할 때까지 계속 반복한다. 음성이 실제로
-  // 끝난 시점부터 5초를 세기 시작해서 "안내 음성 → 그 다음 5초간 호흡" 순서가 항상 지켜지게 한다.
+  // 화면을 나가면(나가기 버튼·뒤로가기 제스처 등 경로 불문) 재생 중이던 안내 음성을 바로 끊는다 —
+  // 안 그러면 화면은 사라져도 이미 말하던 문장이 끝까지 나온다(사용자 리포트).
+  useEffect(() => () => stopSpeech(), [])
+
+  // 호흡 가이드: 5초 내쉬기 → 5초 들이마시기를 터널을 통과할 때까지 계속 반복한다. 예전에는 음성이
+  // 끝난 시점부터 5초를 셌는데, 그러면 한 구간이 "음성 길이 + 5초"가 되어 실제로는 5초보다 길어지고
+  // 매 구간마다 그 차이가 쌓여 갈수록 뒤로 밀렸다(사용자 리포트). 음성은 구간 시작과 동시에 재생하고
+  // 카운트도 그 즉시 시작해서, 음성 길이와 무관하게 항상 정확히 5초 간격이 유지되게 한다.
+  //
+  // 음성은 매 사이클(5초)마다 말하지 않는다 — 처음 한 세트(내쉬기+들이마시기)로 리듬을 알려준 뒤로는
+  // 시각(테두리·게이지)만으로 유지하고, 긴 터널에서는 1km 갈 때마다 한 번씩만 다시 말한다. 안 그러면
+  // 5초마다 계속 말이 나와 회전·위험구간 안내와 계속 부딪힌다(사용자 리포트).
   useEffect(() => {
     if (tunnelPhase !== 'breathing') return
     let cancelled = false
     let tickTimer = null
+    let cycleCount = 0
+    let lastVoicedAtM = 0
     const runPhase = ph => {
       if (cancelled) return
       setBreathPhase(ph)
       setBreathFrac(0)
-      speak(ph === 'exhale' ? '5초간 숨을 내쉬세요.' : '5초간 숨을 들이마시세요.', {
-        onend: () => {
-          if (cancelled) return
-          breathPhaseStartRef.current = Date.now()
-          tickTimer = setInterval(() => {
-            const elapsed = Date.now() - breathPhaseStartRef.current
-            if (elapsed >= BREATH_MS) {
-              clearInterval(tickTimer)
-              runPhase(ph === 'exhale' ? 'inhale' : 'exhale')
-            } else {
-              setBreathFrac(elapsed / BREATH_MS)
-            }
-          }, 100)
-        },
-      })
+      cycleCount += 1
+      const active = routeTunnelsRef.current.find(rt => rt.entered && !rt.passed)
+      const intoM = active ? traveledRef.current - active.startM : 0
+      if (cycleCount <= 2 || intoM - lastVoicedAtM >= BREATH_VOICE_INTERVAL_M) {
+        lastVoicedAtM = intoM
+        speak(ph === 'exhale' ? '5초간 숨을 내쉬세요.' : '5초간 숨을 들이마시세요.', { priority: SpeechPriority.BREATH })
+      }
+      breathPhaseStartRef.current = Date.now()
+      tickTimer = setInterval(() => {
+        const elapsed = Date.now() - breathPhaseStartRef.current
+        if (elapsed >= BREATH_MS) {
+          clearInterval(tickTimer)
+          runPhase(ph === 'exhale' ? 'inhale' : 'exhale')
+        } else {
+          setBreathFrac(elapsed / BREATH_MS)
+        }
+      }, 100)
     }
     runPhase('exhale')
     return () => { cancelled = true; if (tickTimer) clearInterval(tickTimer) }
