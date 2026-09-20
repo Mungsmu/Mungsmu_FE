@@ -12,16 +12,13 @@ import { DEFAULT_TUNNEL } from '../data/routeMock'
 import { haversineM, hasKakaoKey, resolvePlace } from '../lib/kakaoRest'
 import { cumulativeDistM, fetchRoute, traceTunnels } from '../lib/route'
 import { speak, stopSpeech, SpeechPriority } from '../lib/speech'
-import { recordTunnelPass, getMonthlyPassCount } from '../lib/tunnelStats'
 import { resolveTunnelEndpoints } from '../lib/tunnelGeo'
+import { getMe } from '../lib/auth'
 
 // 웹의 src/pages/CompanionPage.jsx와 동일 로직 — 5초 내쉬기 → 5초 들이마시기를 터널을 통과할
 // 때까지 반복. 화면 테두리가 내쉴 때 빨강, 들이마실 때 초록으로 5초에 걸쳐 차오르는 것으로만
 // 표시하고(별도 카드/숫자 카운트다운 없음), 음성이 실제로 끝난 시점부터 5초를 센다.
 const BREATH_MS = 5000
-// 호흡 안내 음성은 매 사이클(5초)마다 말하지 않는다 — 처음 한 세트로 리듬만 알려주고, 긴 터널에서는
-// 이 거리(m)만큼 더 갈 때마다 한 번씩만 다시 말해 리듬을 잃지 않게 한다.
-const BREATH_VOICE_INTERVAL_M = 1000
 const EXIT_WARN_M = 10
 const APPROACH_MS = 5000
 // 주행 카메라가 움직일 경로: 터널 이름을 지오코딩한 지점 전후로 여러 각도를 시도해 실도로 경로를 구하고,
@@ -59,8 +56,8 @@ export default function CompanionScreen() {
   const [breathFrac, setBreathFrac] = useState(0) // 현재 호흡 구간 내 진행률 0~1 (테두리를 5초에 걸쳐 매끄럽게 채움)
   const [pct, setPct] = useState(0)
   const [guardianState, setGuardianState] = useState('idle') // idle | calling | sent
+  const [guardianName, setGuardianName] = useState(null)
   const [exitWarned, setExitWarned] = useState(false)
-  const [monthlyCount, setMonthlyCount] = useState(0)
   const [navPos, setNavPos] = useState(null) // { lat, lng, heading, zoom } — 경로 위 주행 카메라 위치
   const [tunnelPath, setTunnelPath] = useState(null) // [[lat,lng],...] 검증된 실제 터널 구간. 없으면 주행 카메라 미표시
   const [pathResolved, setPathResolved] = useState(false) // 터널 구간 탐색이 끝났는지 — 끝나기 전엔 마커를 아예 안 그려서, "일단 이름으로 찾은 위치" → "실제 터널 구간"으로 지도가 두 번 튀는 걸 막는다
@@ -69,10 +66,14 @@ export default function CompanionScreen() {
   const exitWarnedRef = useRef(false)
   const completedRef = useRef(false)
   const demoRouteRef = useRef(null) // { path, cum, totalM } — 주행 카메라가 따라갈 경로
-  const traveledMRef = useRef(0) // 터널 진입 후 이동거리(m) — 호흡 안내 음성을 얼마나 자주 말할지 판단용
+  const traveledMRef = useRef(0) // 터널 진입 후 이동거리(m) — 진출 경고(EXIT_WARN_M) 판단용
 
   // 화면을 나가면(나가기 버튼·뒤로가기 제스처) 재생 중이던 안내 음성을 바로 끊는다.
   useEffect(() => () => stopSpeech(), [])
+
+  useEffect(() => {
+    getMe().then(m => setGuardianName(m.guardianName)).catch(() => {})
+  }, [])
 
   // 0) 터널 구간 경로 확보. 우선순위:
   //   ① RouteInputScreen에서 실도로 경로를 계산할 때(computeRouteResult) 이미 traceTunnels로
@@ -164,25 +165,18 @@ export default function CompanionScreen() {
   // 길어지고 매 구간마다 그 차이가 쌓여 갈수록 뒤로 밀렸다. 음성은 구간 시작과 동시에 재생하고
   // 카운트도 그 즉시 시작해서, 음성 길이와 무관하게 항상 정확히 5초 간격이 유지되게 한다.
   //
-  // 음성은 매 사이클(5초)마다 말하지 않는다 — 처음 한 세트(내쉬기+들이마시기)로 리듬을 알려준 뒤로는
-  // 시각(테두리·게이지)만으로 유지하고, 긴 터널에서는 1km 갈 때마다 한 번씩만 다시 말한다.
+  // 튜토리얼은 실제 주행(NavigatingScreen)과 달리 다른 안내(회전·위험구간)와 겹칠 일이 없어
+  // 매 호흡 사이클마다 음성을 그대로 다 들려준다 — 실제 주행 쪽만 1km당 한 번으로 절제한다.
   useEffect(() => {
     if (phase !== 'breathing') return
     let cancelled = false
     let tickTimer = null
-    let cycleCount = 0
-    let lastVoicedAtM = 0
 
     const runPhase = ph => {
       if (cancelled) return
       setBreathPhase(ph)
       setBreathFrac(0)
-      cycleCount += 1
-      const intoM = traveledMRef.current
-      if (cycleCount <= 2 || intoM - lastVoicedAtM >= BREATH_VOICE_INTERVAL_M) {
-        lastVoicedAtM = intoM
-        speak(ph === 'exhale' ? '5초간 숨을 내쉬세요.' : '5초간 숨을 들이마시세요.', { priority: SpeechPriority.BREATH })
-      }
+      speak(ph === 'exhale' ? '5초간 숨을 내쉬세요.' : '5초간 숨을 들이마시세요.', { priority: SpeechPriority.BREATH })
       phaseStartRef.current = Date.now()
       tickTimer = setInterval(() => {
         const elapsed = Date.now() - phaseStartRef.current
@@ -202,10 +196,10 @@ export default function CompanionScreen() {
   // 이 화면은 이제 홈 화면 "동반 모드" 버튼으로만 들어오는 튜토리얼 전용이다(실제 여정 중
   // 터널을 만나면 NavigatingScreen이 화면 전환 없이 자체 오버레이로 처리한다) — 그래서 통과
   // 완료 후 실제 내비게이션으로 돌아가는 분기는 항상 도달 불가능해 제거했다.
+  // 튜토리얼일 뿐 실제 통과가 아니므로 이번 달 기록(recordTunnelPass)에는 반영하지 않는다.
   const finish = () => {
     if (completedRef.current) return
     completedRef.current = true
-    recordTunnelPass().then(() => getMonthlyPassCount()).then(setMonthlyCount)
     speak('터널을 통과하셨습니다.', { priority: SpeechPriority.BREATH })
     setPct(100)
     setPhase('done')
@@ -350,7 +344,7 @@ export default function CompanionScreen() {
         <View style={[styles.topRow, { top: insets.top + 16 }]}>
           <View style={styles.sharePill}>
             <View style={styles.shareDot} />
-            <Text style={styles.shareText}>보호자 김민준 님께 실시간 위치 공유 중</Text>
+            <Text style={styles.shareText}>보호자 {guardianName ?? '...'} 님께 실시간 위치 공유 중</Text>
           </View>
           <Pressable onPress={() => nav.goBack()} style={styles.exitBtn}>
             <Text style={styles.exitText}>나가기 ✕</Text>

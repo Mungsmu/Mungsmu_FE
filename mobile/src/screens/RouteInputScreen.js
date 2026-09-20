@@ -22,15 +22,20 @@ export default function RouteInputScreen() {
   const [originCoords, setOriginCoords] = useState(null)
   const [usingCurrentLocation, setUsingCurrentLocation] = useState(false)
 
-  // 사용자가 출발지를 직접 건드렸는지. 자동 위치 채우기가 늦게 끝나면서 입력 중인 글자를
-  // 덮어쓰지 않도록 하는 데 쓴다 — 한글 입력 중에 값이 통째로 바뀌면 조합이 끊기면서
-  // 키보드가 내려가 버린다(사용자 리포트 "한 글자 입력하면 키보드가 내려감").
-  const originTouchedRef = useRef(false)
+  // 사용자가 이 화면에서 뭐라도(출발지든 목적지든) 입력을 시작했는지. 자동 위치 채우기가 늦게
+  // 끝나면서 입력 중인 값을 덮어쓰지 않도록 하는 데 쓴다 — 출발지만 감시하면, 목적지를 타이핑하는
+  // 도중에 출발지 칸이 자동으로 채워져 레이아웃이 밀리면서 포커스가 끊기고 키보드가 내려가
+  // 버린다(사용자 리포트 "빈 칸일 때 글자 입력하면 화면이 움찔거리고 키보드가 닫힘").
+  const interactedRef = useRef(false)
 
   const handleOriginChange = v => {
-    originTouchedRef.current = true
+    interactedRef.current = true
     setOrigin(v)
     setUsingCurrentLocation(false)
+  }
+  const handleDestChange = v => {
+    interactedRef.current = true
+    setDest(v)
   }
 
   // 출발지는 대부분 "지금 있는 곳"이다. 예전에는 빈 칸으로 시작해 사용자가 직접 주소를 쳐야 했고,
@@ -46,24 +51,32 @@ export default function RouteInputScreen() {
 
   // auto: 화면 진입 시 자동으로 부른 경우. 이때는 사용자가 이미 입력을 시작했으면 덮어쓰지 않고,
   // 실패해도 경고창을 띄우지 않는다(직접 누른 게 아닌데 팝업이 뜨면 놀라기만 한다).
+  //
+  // GPS 권한 확인·위치 조회·역지오코딩은 각각 수백ms~수 초가 걸릴 수 있다. 예전에는 이 셋이 끝난
+  // 뒤 마지막에 setOrigin()만 interactedRef로 막았는데, 그사이 setLocating(true)로 시작한 뒤
+  // await 도중 사용자가 출발지 칸을 비우고 새로 타이핑하면 이 함수가 결국 setOriginCoords 등으로
+  // 화면을 다시 렌더링해서 타이핑 중인 입력창 포커스가 끊겼다(사용자 리포트: "출발지 공란에서
+  // 입력하면 키보드가 튕김"). 이제 auto 호출은 각 await 지점마다 확인해서, 사용자가 손을 댄
+  // 순간 남은 단계를 전부 그만두고 아무 상태도 더 건드리지 않는다.
   const useCurrentLocation = async ({ auto = false } = {}) => {
     if (locating) return
+    if (auto && interactedRef.current) return
     setLocating(true)
     try {
       const { status } = await Location.requestForegroundPermissionsAsync()
+      if (auto && interactedRef.current) return
       if (status !== 'granted') {
         if (!auto) Alert.alert('위치 권한이 필요해요', '설정에서 위치 접근 권한을 허용해주세요.')
         return
       }
       const pos = await getCurrentPosition()
+      if (auto && interactedRef.current) return
       const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
       const address = await reverseGeocode(coords)
+      if (auto && interactedRef.current) return
       setOriginCoords({ ...coords, name: '현재 위치', address: address ?? '' })
-      // 자동 호출인데 그 사이 사용자가 입력을 시작했다면 좌표만 챙기고 입력창은 그대로 둔다.
-      if (!(auto && originTouchedRef.current)) {
-        setOrigin(address ?? '현재 위치')
-        setUsingCurrentLocation(true)
-      }
+      setOrigin(address ?? '현재 위치')
+      setUsingCurrentLocation(true)
     } catch {
       if (!auto) Alert.alert('위치를 확인할 수 없어요', 'GPS 신호를 받을 수 없습니다. 잠시 후 다시 시도해주세요.')
     } finally {
@@ -92,9 +105,9 @@ export default function RouteInputScreen() {
       <Text style={styles.subtitle}>출발지와 목적지를 입력하면 터널 회피 경로와 최단 경로를 비교해드려요.</Text>
 
       <View style={styles.inputBox}>
-        <PlaceAutocompleteInput value={origin} onChange={handleOriginChange} placeholder="서울 (출발)" dotColor={COLORS.primary} recent={RECENT} />
+        <PlaceAutocompleteInput value={origin} onChange={handleOriginChange} onSubmit={search} placeholder="서울 (출발)" dotColor={COLORS.primary} recent={RECENT} />
         <View style={styles.divider} />
-        <PlaceAutocompleteInput value={dest} onChange={setDest} onSubmit={search} placeholder="강릉시 경포해변" dotColor={COLORS.gradeRed} recent={RECENT} />
+        <PlaceAutocompleteInput value={dest} onChange={handleDestChange} onSubmit={search} placeholder="강릉시 경포해변" dotColor={COLORS.gradeRed} recent={RECENT} />
       </View>
 
       <Pressable onPress={useCurrentLocation} disabled={locating} style={styles.currentLocBtn}>

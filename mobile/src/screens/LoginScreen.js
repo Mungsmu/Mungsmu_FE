@@ -2,25 +2,27 @@ import { useState } from 'react'
 import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native'
 import { useNavigation } from '@react-navigation/native'
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
-import { findUser, setSession } from '../lib/auth'
+import { login } from '../lib/auth'
 
 export default function LoginScreen() {
   const nav = useNavigation()
   const [userId, setUserId] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  // 아직 실제 백엔드가 없어서, 가입된 계정이면 비밀번호를 검증하고
-  // 가입 이력이 없으면(=임시로 아무거나 입력해본 경우) 그 입력값으로 임시 세션을 만들어 통과시킨다.
   const submit = async () => {
-    if (!userId.trim() || !password) return
-    const user = await findUser(userId.trim())
-    if (user && user.password !== password) {
-      setError('비밀번호가 일치하지 않아요.')
-      return
+    if (!userId.trim() || !password || loading) return
+    setLoading(true)
+    setError('')
+    try {
+      await login(userId.trim(), password)
+      nav.reset({ index: 0, routes: [{ name: 'Home' }] })
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
     }
-    await setSession(user ?? { userId: userId.trim(), name: userId.trim() })
-    nav.reset({ index: 0, routes: [{ name: 'Home' }] })
   }
 
   return (
@@ -40,11 +42,10 @@ export default function LoginScreen() {
         <TextInput value={password} onChangeText={t => { setPassword(t); setError('') }} onSubmitEditing={submit}
           placeholder="비밀번호를 입력하세요" placeholderTextColor={COLORS.textMuted} style={styles.input} secureTextEntry />
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        <Pressable onPress={submit} disabled={!userId.trim() || !password} style={[styles.button, (!userId.trim() || !password) && { opacity: 0.4 }]}>
-          <Text style={styles.buttonText}>로그인</Text>
+        <Pressable onPress={submit} disabled={!userId.trim() || !password || loading} style={[styles.button, (!userId.trim() || !password || loading) && { opacity: 0.4 }]}>
+          <Text style={styles.buttonText}>{loading ? '로그인 중...' : '로그인'}</Text>
         </Pressable>
 
-        <Text style={styles.footnote}>아직 백엔드 연동 전이라, 가입 이력이 없어도 아이디·비밀번호를 입력하면 임시로 이용하실 수 있어요.</Text>
         <Pressable onPress={() => nav.navigate('SignUp')}>
           <Text style={styles.signupLink}>회원가입 하러 가기 →</Text>
         </Pressable>
@@ -67,6 +68,5 @@ const styles = StyleSheet.create({
   errorText: { alignSelf: 'flex-start', fontSize: 12.5, color: '#A53E33', marginTop: -8, marginBottom: 10 },
   button: { width: '100%', backgroundColor: COLORS.primary, borderRadius: RADIUS.lg, paddingVertical: 14, alignItems: 'center', ...SHADOW_MD },
   buttonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  footnote: { fontSize: 11.5, color: COLORS.textMuted, textAlign: 'center', lineHeight: 17, marginTop: 20 },
   signupLink: { fontSize: 13, fontWeight: '700', color: COLORS.primary, marginTop: 14 },
 })

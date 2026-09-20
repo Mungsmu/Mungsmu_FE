@@ -14,6 +14,10 @@ export const SpeechPriority = {
 }
 
 let currentPriority = null
+let pendingTimer = null
+// stopSpeech()가 호출될 때마다 증가 — 50ms 지연 재생이 예약된 상태에서 페이지를 나가
+// stopSpeech()가 불려도, 그 타이머가 나중에 혼자 발화하지 않도록 실행 직전 이 토큰을 확인한다.
+let stopToken = 0
 
 export function speak(text, { onend, priority = SpeechPriority.ROUTE } = {}) {
   // 지금 재생 중인 안내보다 우선순위가 낮으면(숫자가 크면) 방해하지 않고 건너뛴다.
@@ -24,22 +28,30 @@ export function speak(text, { onend, priority = SpeechPriority.ROUTE } = {}) {
   u.lang = 'ko-KR'
   u.rate = 1
   currentPriority = priority
+  const myToken = stopToken
   const clear = () => { if (currentPriority === priority) currentPriority = null }
   u.onend = () => { clear(); onend?.() }
   u.onerror = () => { clear(); onend?.() }
+  const speakNow = () => {
+    if (stopToken !== myToken) { clear(); onend?.(); return }
+    synth.speak(u)
+  }
   // 크롬은 cancel() 직후 같은 틱에서 speak()를 호출하면 새 발화가 조용히 씹히는 버그가 있다.
   // 재생 중일 때만 취소하고, 취소 후에는 한 틱 쉬었다가 새 발화를 넣어준다.
   if (synth.speaking || synth.pending) {
     synth.cancel()
-    setTimeout(() => synth.speak(u), 50)
+    pendingTimer = setTimeout(() => { pendingTimer = null; speakNow() }, 50)
   } else {
-    synth.speak(u)
+    speakNow()
   }
 }
 
 // 내비게이션 페이지를 나갈 때(뒤로가기·나가기 버튼) 남아 있던 안내 음성을 즉시 끊는다 — 안 부르면
-// 페이지는 사라져도 이미 재생 중이던 문장은 끝까지 나온다.
+// 페이지는 사라져도 이미 재생 중이던 문장은 끝까지 나온다. 아직 실행되지 않은 50ms 지연 재생
+// 예약(setTimeout)도 함께 취소해야, 그 타이머가 나중에 혼자 발화하는 걸 막을 수 있다.
 export function stopSpeech() {
   currentPriority = null
+  stopToken += 1
+  if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null }
   if (typeof window !== 'undefined') window.speechSynthesis?.cancel()
 }

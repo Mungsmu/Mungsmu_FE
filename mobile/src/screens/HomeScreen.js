@@ -1,8 +1,10 @@
+import { useEffect, useState } from 'react'
 import { View, Text, Pressable, StyleSheet } from 'react-native'
 import { useNavigation } from '@react-navigation/native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import MockMap from '../components/MockMap'
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
+import { getSession } from '../lib/auth'
 
 const FEATURES = [
   { icon: '🗺️', label: '안심 코스', screen: 'Courses' },
@@ -14,13 +16,18 @@ const FEATURES = [
 export default function HomeScreen() {
   const nav = useNavigation()
   const insets = useSafeAreaInsets()
+  const [initial, setInitial] = useState('?')
+
+  useEffect(() => {
+    getSession().then(s => setInitial(s?.name?.[0] ?? '?'))
+  }, [])
 
   return (
     <View style={styles.container}>
       <MockMap>
         <View style={[styles.topRow, { top: insets.top + 12 }]}>
           <Pressable onPress={() => nav.navigate('MyPage')} style={styles.avatarBtn}>
-            <Text style={styles.avatarText}>서</Text>
+            <Text style={styles.avatarText}>{initial}</Text>
           </Pressable>
 
           <Pressable onPress={() => nav.navigate('RouteInput')} style={styles.searchBar}>

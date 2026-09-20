@@ -1,24 +1,30 @@
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import { useNavigation, useRoute } from '@react-navigation/native'
 import MockMap from '../components/MockMap'
-import { COURSES, GRADE } from '../data/mock'
+import { GRADE } from '../data/mock'
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
 
+// 백엔드에 코스 상세 조회 API가 따로 없어서, 목록 화면(CoursesScreen)에서 고른 코스 객체를
+// 그대로 파라미터로 받는다 — 다시 id로 조회할 필요가 없다.
 export default function CourseDetailScreen() {
   const nav = useNavigation()
-  const { id } = useRoute().params
-  const course = COURSES.find(c => c.id === id)
+  const { course } = useRoute().params
   if (!course) return <View style={styles.container}><Text style={styles.notFound}>코스를 찾을 수 없어요.</Text></View>
   const m = GRADE[course.grade]
 
   const guideCourse = () => {
+    // 지오코딩 검색어에 "강원 + 시군구명"을 같이 넣는다 — 시군구명만으로는 부족한 경우가 있다
+    // (예: "고성군"은 강원/경남에 둘 다 있어서, 관광지 이름이 검색 안 돼 지역명까지 폴백되면
+    // 카카오가 경남 고성군을 대표로 잡아버림 — 실측 확인). "강원"까지 붙이면 최후의 폴백(지역명만
+    // 남는 경우)에서도 항상 올바른 도로 좁혀진다.
+    const withRegion = name => `강원 ${course.region} ${name}`
     const [first, ...rest] = course.spots
     const last = rest.pop()
     nav.navigate('RouteCourse', {
       courseTitle: course.title,
-      origin: first.name,
-      dest: last.name,
-      waypoints: rest.map(s => s.name),
+      origin: withRegion(first.name),
+      dest: withRegion(last.name),
+      waypoints: rest.map(s => withRegion(s.name)),
       distance: course.distance,
       tunnelTag: course.tags.find(t => t.startsWith('터널')),
     })
@@ -27,7 +33,10 @@ export default function CourseDetailScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 20 }}>
       <View style={styles.mapCard}>
-        <MockMap showPath markers={course.spots.map((s, i) => ({ id: s.name, label: String(i + 1), query: s.name, color: '#14807A' }))}>
+        {/* 지오코딩 검색어에 "강원 + 시군구명"을 같이 넣는다 — 관광지 이름만 검색하면 "계촌마을"
+            처럼 흔한 이름이 전혀 다른 지역으로 잡히고, 시군구명만 붙여도 "고성군"처럼 도(道)가
+            겹치는 지명은 여전히 틀린 도로 폴백될 수 있다(실측 확인, 강원 고성군 vs 경남 고성군). */}
+        <MockMap showPath markers={course.spots.map((s, i) => ({ id: s.name, label: String(i + 1), query: `강원 ${course.region} ${s.name}`, color: '#14807A' }))}>
           <View style={styles.mapBadge}><Text style={styles.mapBadgeText}>{course.spots.length}개 경유지</Text></View>
         </MockMap>
       </View>

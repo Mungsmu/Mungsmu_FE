@@ -207,7 +207,7 @@ export default function NavigatingPage() {
     if (tunnelCompletedRef.current) return
     tunnelCompletedRef.current = true
     const sec = (Date.now() - (tunnelEnterTimeRef.current ?? Date.now())) / 1000
-    recordTunnelPass()
+    recordTunnelPass(t.diff)
     speak(`${t.name}을 통과하셨습니다. 경로 안내를 이어갑니다.`, { priority: SpeechPriority.BREATH })
     setTunnelPct(100)
     setPassedTunnels(prev => [...prev, { name: t.name, diff: t.diff, sec }])

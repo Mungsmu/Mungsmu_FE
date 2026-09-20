@@ -51,10 +51,10 @@ export const COURSES = [
 
 export const TUNNELS = [
   { id: 't1', name: '인제양양터널', road: '서울양양고속도로', region: '인제', lengthM: 10965, lanes: 4, ventGrade: '우수',  congestion: '낮음', diff: 5 },
-  { id: 't2', name: '미시령터널',   road: '미시령동서관통도로', region: '인제', lengthM: 3690, lanes: 4, ventGrade: '양호', congestion: '보통', diff: 4 },
-  { id: 't3', name: '둔내터널',     road: '영동고속도로',      region: '횡성', lengthM: 3300,  lanes: 4, ventGrade: '양호', congestion: '높음', diff: 4 },
-  { id: 't4', name: '대관령1터널',  road: '영동고속도로',      region: '평창', lengthM: 1860,  lanes: 4, ventGrade: '양호', congestion: '보통', diff: 3 },
-  { id: 't5', name: '광치터널',     road: '국도 31호선',       region: '인제', lengthM: 2140,  lanes: 2, ventGrade: '보통', congestion: '낮음', diff: 4 },
+  { id: 't2', name: '미시령터널',   road: '미시령동서관통도로', region: '인제', lengthM: 3565, lanes: 4, ventGrade: '양호', congestion: '보통', diff: 5 },
+  { id: 't3', name: '둔내터널',     road: '영동고속도로',      region: '횡성', lengthM: 3300,  lanes: 4, ventGrade: '양호', congestion: '높음', diff: 5 },
+  { id: 't4', name: '대관령1터널',  road: '영동고속도로',      region: '평창', lengthM: 1830,  lanes: 4, ventGrade: '양호', congestion: '보통', diff: 4 },
+  { id: 't5', name: '광치터널',     road: '국도 31호선',       region: '인제', lengthM: 570,  lanes: 2, ventGrade: '보통', congestion: '낮음', diff: 4 },
   { id: 't6', name: '백복령터널',   road: '국도 42호선',       region: '정선', lengthM: 870,   lanes: 2, ventGrade: '보통', congestion: '낮음', diff: 2 },
 ];
 

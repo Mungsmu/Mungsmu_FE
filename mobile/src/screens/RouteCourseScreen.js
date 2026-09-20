@@ -4,8 +4,11 @@ import { useNavigation, useRoute } from '@react-navigation/native'
 import MockMap from '../components/MockMap'
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
 import { resolvePlace, hasKakaoKey } from '../lib/kakaoRest'
-import { fetchRoute } from '../lib/route'
+import { fetchRoute, traceTunnels } from '../lib/route'
 import { computeRouteResult, MOCK_RESULT } from '../data/routeMock'
+
+// 500m 이상 장대터널만 집계 — 짧은 지하차도는 제외 (RoutePage/RouteDetailScreen과 동일 기준)
+const MIN_TUNNEL_M = 500
 
 // 안심 코스 상세에서 "코스 안내"를 눌렀을 때 진입하는 화면 — 코스의 경유지를 순서대로 이어서
 // 길안내를 시작하기 전에 전체 동선을 미리 보여준다. 미리보기 지도는 회피 경로로 보여주지만,
@@ -19,11 +22,16 @@ export default function RouteCourseScreen() {
   const [routePath, setRoutePath] = useState(null)
   const [spotPlaces, setSpotPlaces] = useState([]) // 각 경유지 지오코딩 결과 — 마커를 WebView 안 재검색 없이 바로 찍기 위함
   const [starting, setStarting] = useState(false)
+  // 회피 경로가 실제로 지나는 터널 개수(실측) — null이면 아직 계산 중이거나 실패, 그동안은
+  // 백엔드 코스 태그의 추정치(tunnelTag)로 대신 보여준다. 회피 경로도 완전히 0개를 보장하진
+  // 않는다(우회할 도로 자체가 없으면 하나쯤 남을 수 있음) — 그래서 추정치 대신 실측값을 쓴다.
+  const [tunnelCount, setTunnelCount] = useState(null)
 
   useEffect(() => {
     let cancelled = false
     setRoutePath(null)
     setSpotPlaces([])
+    setTunnelCount(null)
     if (!hasKakaoKey) return
     ;(async () => {
       const places = await Promise.all(allSpots.map(name => resolvePlace(name)))
@@ -31,7 +39,10 @@ export default function RouteCourseScreen() {
       setSpotPlaces(places)
       // 미리보기는 회피 경로로 — 실제 진행 여부는 "이 코스로 출발하기"에서 비교 후 선택한다
       const route = await fetchRoute(places, { excludeTunnels: true })
-      if (!cancelled && route) setRoutePath(route.path)
+      if (cancelled || !route) return
+      setRoutePath(route.path)
+      const traced = await traceTunnels(route.shapes)
+      if (!cancelled) setTunnelCount(traced ? traced.filter(s => s.lengthM >= MIN_TUNNEL_M).length : null)
     })()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,10 +85,15 @@ export default function RouteCourseScreen() {
           <Text style={styles.statValue}>{allSpots.length}곳</Text>
           <Text style={styles.statLabel}>경유지</Text>
         </View>
-        {tunnelTag && (
+        {tunnelCount !== null ? (
+          <View>
+            <Text style={[styles.statValue, { color: tunnelCount === 0 ? '#2E7D4F' : '#A53E33' }]}>{tunnelCount}개</Text>
+            <Text style={styles.statLabel}>터널(회피 경로 실측)</Text>
+          </View>
+        ) : tunnelTag && (
           <View>
             <Text style={[styles.statValue, { color: '#2E7D4F' }]}>{tunnelTag}</Text>
-            <Text style={styles.statLabel}>터널</Text>
+            <Text style={styles.statLabel}>터널(추정)</Text>
           </View>
         )}
       </View>

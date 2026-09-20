@@ -1,42 +1,68 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet, Animated } from 'react-native'
 import { useNavigation } from '@react-navigation/native'
 import { COLORS, RADIUS, SHADOW_MD } from '../theme'
-import { clearSession } from '../lib/auth'
+import { getMe, updateMe, clearSession } from '../lib/auth'
+import { getMonthlyPassCount, getMonthlyRouteAvoidCount, getMonthlyAvgDifficulty } from '../lib/tunnelStats'
 
 function Toggle({ on, onToggle }) {
   const anim = useState(new Animated.Value(on ? 1 : 0))[0]
-  const toggle = () => {
-    const next = !on
-    Animated.timing(anim, { toValue: next ? 1 : 0, duration: 200, useNativeDriver: false }).start()
-    onToggle(next)
-  }
+  useEffect(() => {
+    Animated.timing(anim, { toValue: on ? 1 : 0, duration: 200, useNativeDriver: false }).start()
+  }, [on])
   const left = anim.interpolate({ inputRange: [0, 1], outputRange: [3, 21] })
   return (
-    <Pressable onPress={toggle} style={[styles.toggleTrack, { backgroundColor: on ? COLORS.primary : '#D6D0C4' }]}>
+    <Pressable onPress={() => onToggle(!on)} style={[styles.toggleTrack, { backgroundColor: on ? COLORS.primary : '#D6D0C4' }]}>
       <Animated.View style={[styles.toggleThumb, { left }]} />
     </Pressable>
   )
 }
 
 const SETTINGS = [
-  { key: 'share', label: '실시간 위치 공유', desc: '동반 모드 중 보호자에게 위치 전송' },
+  { key: 'share', label: '실시간 위치 공유', desc: '동반 모드 중 보호자에게 위치 전송 (준비 중)' },
   { key: 'auto', label: '자동 통과 알림', desc: '터널 진입·통과 시 보호자에게 자동 알림' },
-  { key: 'emer', label: '긴급 호출 위임', desc: '긴급 호출 시 보호자에게 즉시 연결' },
+  { key: 'emer', label: '긴급 호출 위임', desc: '긴급 호출 시 보호자에게 즉시 연결 (준비 중)' },
 ]
 
 export default function MyPageScreen() {
   const nav = useNavigation()
+  const [me, setMe] = useState(null)
+  const [passCount, setPassCount] = useState(0)
+  const [avoidCount, setAvoidCount] = useState(0)
+  const [avgDiff, setAvgDiff] = useState(null)
   const [toggles, setToggles] = useState({ share: true, auto: true, emer: false })
+
+  useEffect(() => {
+    getMe().then(m => { setMe(m); setToggles(t => ({ ...t, auto: m.guardianAlertEnabled })) }).catch(() => {})
+    getMonthlyPassCount().then(setPassCount)
+    getMonthlyRouteAvoidCount().then(setAvoidCount)
+    getMonthlyAvgDifficulty().then(setAvgDiff)
+  }, [])
+
+  // 백엔드엔 보호자 알림 on/off 필드(guardianAlertEnabled) 하나뿐이라, 'auto' 토글만 서버에 저장된다.
+  const toggleAuto = async (next) => {
+    if (!me) return
+    setToggles(t => ({ ...t, auto: next }))
+    try {
+      const updated = await updateMe({
+        name: me.name, phone: me.phone,
+        guardianName: me.guardianName, guardianPhone: me.guardianPhone,
+        guardianRelation: me.guardianRelation, guardianAlertEnabled: next,
+      })
+      setMe(updated)
+    } catch {
+      setToggles(t => ({ ...t, auto: !next }))
+    }
+  }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 20 }}>
       <Text style={styles.title}>마이페이지</Text>
 
       <View style={styles.profileCard}>
-        <View style={styles.avatar}><Text style={styles.avatarText}>서</Text></View>
+        <View style={styles.avatar}><Text style={styles.avatarText}>{me?.name?.[0] ?? '?'}</Text></View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.profileName}>서연 님</Text>
+          <Text style={styles.profileName}>{me ? `${me.name} 님` : '불러오는 중...'}</Text>
           <Text style={styles.profileSub}>마음숨길 여행자</Text>
         </View>
       </View>
@@ -44,7 +70,7 @@ export default function MyPageScreen() {
       <View style={styles.statsCard}>
         <Text style={styles.cardTitle}>이번 달 기록</Text>
         <View style={styles.statsRow}>
-          {[['12회', '터널 통과 성공', '#2E9E6B'], ['5회', '안심 경로 회피', COLORS.primary], ['3단계', '평균 통과 난이도', '#E0A93B']].map(([v, l, c]) => (
+          {[[`${passCount}회`, '터널 통과 성공', '#2E9E6B'], [`${avoidCount}회`, '안심 경로 회피', COLORS.primary], [avgDiff != null ? `${avgDiff}단계` : '-', '평균 통과 난이도', '#E0A93B']].map(([v, l, c]) => (
             <View key={l} style={styles.statItem}>
               <Text style={[styles.statValue, { color: c }]}>{v}</Text>
               <Text style={styles.statLabel}>{l}</Text>
@@ -58,10 +84,10 @@ export default function MyPageScreen() {
           <Text style={styles.cardTitle}>보호자 연동</Text>
         </View>
         <View style={styles.guardianRow}>
-          <View style={styles.guardianAvatar}><Text style={styles.guardianAvatarText}>민</Text></View>
+          <View style={styles.guardianAvatar}><Text style={styles.guardianAvatarText}>{me?.guardianName?.[0] ?? '-'}</Text></View>
           <View>
-            <Text style={styles.guardianName}>김민준</Text>
-            <Text style={styles.guardianPhone}>가족 · 010-0000-0000</Text>
+            <Text style={styles.guardianName}>{me?.guardianName ?? '-'}</Text>
+            <Text style={styles.guardianPhone}>{me ? `${me.guardianRelation} · ${me.guardianPhone}` : ''}</Text>
           </View>
         </View>
         {SETTINGS.map(s => (
@@ -70,7 +96,7 @@ export default function MyPageScreen() {
               <Text style={styles.settingLabel}>{s.label}</Text>
               <Text style={styles.settingDesc}>{s.desc}</Text>
             </View>
-            <Toggle on={toggles[s.key]} onToggle={v => setToggles(t => ({ ...t, [s.key]: v }))} />
+            <Toggle on={toggles[s.key]} onToggle={s.key === 'auto' ? toggleAuto : v => setToggles(t => ({ ...t, [s.key]: v }))} />
           </View>
         ))}
       </View>

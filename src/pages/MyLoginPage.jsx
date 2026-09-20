@@ -1,12 +1,41 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { login, clearSession } from '../lib/auth.js'
+import { login, getMe, updateMe, clearSession } from '../lib/auth.js'
+import { getMonthlyPassCount, getMonthlyRouteAvoidCount, getMonthlyAvgDifficulty } from '../lib/tunnelStats.js'
 
 export function MyPage() {
   const nav = useNavigate()
+  const [me, setMe] = useState(null)
+  const [passCount, setPassCount] = useState(0)
+  const [avoidCount, setAvoidCount] = useState(0)
+  const [avgDiff, setAvgDiff] = useState(null)
   const [share, setShare] = useState(true)
   const [auto,  setAuto]  = useState(true)
   const [emer,  setEmer]  = useState(false)
+
+  useEffect(() => {
+    getMe().then(m => { setMe(m); setAuto(m.guardianAlertEnabled) }).catch(() => {})
+    setPassCount(getMonthlyPassCount())
+    setAvoidCount(getMonthlyRouteAvoidCount())
+    setAvgDiff(getMonthlyAvgDifficulty())
+  }, [])
+
+  // 백엔드엔 보호자 알림 on/off 필드(guardianAlertEnabled) 하나뿐이라, 세 토글 중 '자동 통과 알림'만 서버에 저장된다.
+  const toggleAuto = async (fn) => {
+    if (!me) return
+    const next = fn(auto)
+    setAuto(next)
+    try {
+      const updated = await updateMe({
+        name: me.name, phone: me.phone,
+        guardianName: me.guardianName, guardianPhone: me.guardianPhone,
+        guardianRelation: me.guardianRelation, guardianAlertEnabled: next,
+      })
+      setMe(updated)
+    } catch {
+      setAuto(v => !v)
+    }
+  }
 
   const Toggle = ({ on, set }) => (
     <button onClick={() => set(v => !v)} style={{ position:'relative', width:44, height:26, borderRadius:13, background: on ? 'var(--primary)' : '#D6D0C4', border:'none', cursor:'pointer', transition:'background .2s', flexShrink:0 }}>
@@ -21,9 +50,9 @@ export function MyPage() {
         <div>
           {/* 프로필 */}
           <div style={{ background:'var(--bg-surface)', border:'1px solid var(--border-light)', borderRadius:'var(--r-xl)', padding:22, display:'flex', alignItems:'center', gap:16, marginBottom:16 }}>
-            <div style={{ width:52, height:52, borderRadius:'50%', background:'var(--primary-bg)', color:'var(--primary)', fontSize:20, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>서</div>
+            <div style={{ width:52, height:52, borderRadius:'50%', background:'var(--primary-bg)', color:'var(--primary)', fontSize:20, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>{me?.name?.[0] ?? '?'}</div>
             <div>
-              <p style={{ fontSize:18, fontWeight:800, color:'var(--text-head)', marginBottom:3 }}>서연 님</p>
+              <p style={{ fontSize:18, fontWeight:800, color:'var(--text-head)', marginBottom:3 }}>{me ? `${me.name} 님` : '불러오는 중...'}</p>
               <p style={{ fontSize:12, color:'var(--text-muted)' }}>마음숨길 여행자</p>
             </div>
             <button style={{ marginLeft:'auto', border:'1px solid var(--border-light)', background:'var(--bg-page)', color:'var(--text-sub)', fontSize:12, fontWeight:700, padding:'7px 14px', borderRadius:8, cursor:'pointer', flexShrink:0 }}>프로필 수정</button>
@@ -32,7 +61,7 @@ export function MyPage() {
           <div style={{ background:'var(--bg-surface)', border:'1px solid var(--border-light)', borderRadius:'var(--r-xl)', padding:22 }}>
             <p style={{ fontSize:15, fontWeight:800, color:'var(--text-head)', marginBottom:18 }}>이번 달 기록</p>
             <div style={{ display:'flex' }}>
-              {[['12회','터널 통과 성공','#2E9E6B'],['5회','안심 경로 회피','var(--primary)'],['3단계','평균 통과 난이도','#E0A93B']].map(([v,l,c],i,arr) => (
+              {[[`${passCount}회`,'터널 통과 성공','#2E9E6B'],[`${avoidCount}회`,'안심 경로 회피','var(--primary)'],[avgDiff != null ? `${avgDiff}단계` : '-','평균 통과 난이도','#E0A93B']].map(([v,l,c],i,arr) => (
                 <div key={l} style={{ flex:1, paddingLeft: i===0?0:16, borderLeft: i===0?'none':'1px solid var(--border-light)' }}>
                   <div style={{ fontSize:24, fontWeight:800, color:c, lineHeight:1, marginBottom:4 }}>{v}</div>
                   <div style={{ fontSize:11, color:'var(--text-muted)', lineHeight:1.4 }}>{l}</div>
@@ -50,13 +79,13 @@ export function MyPage() {
               <button style={{ fontSize:12, color:'var(--primary)', fontWeight:700, cursor:'pointer' }}>연락처 변경</button>
             </div>
             <div style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 14px', background:'var(--bg-page)', borderRadius:8, marginBottom:16 }}>
-              <div style={{ width:36, height:36, borderRadius:'50%', background:'var(--primary-bg)', color:'var(--primary)', fontSize:14, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>민</div>
+              <div style={{ width:36, height:36, borderRadius:'50%', background:'var(--primary-bg)', color:'var(--primary)', fontSize:14, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>{me?.guardianName?.[0] ?? '-'}</div>
               <div>
-                <p style={{ fontSize:15, fontWeight:700, color:'var(--text-head)', marginBottom:2 }}>김민준</p>
-                <p style={{ fontSize:12, color:'var(--text-muted)' }}>가족 · 010-0000-0000</p>
+                <p style={{ fontSize:15, fontWeight:700, color:'var(--text-head)', marginBottom:2 }}>{me?.guardianName ?? '-'}</p>
+                <p style={{ fontSize:12, color:'var(--text-muted)' }}>{me ? `${me.guardianRelation} · ${me.guardianPhone}` : ''}</p>
               </div>
             </div>
-            {[['실시간 위치 공유','동반 모드 중 보호자에게 위치 전송', share, setShare],['자동 통과 알림','터널 진입·통과 시 보호자에게 자동 알림', auto, setAuto],['긴급 호출 위임','긴급 호출 시 보호자에게 즉시 연결', emer, setEmer]].map(([l,s,v,set]) => (
+            {[['실시간 위치 공유','동반 모드 중 보호자에게 위치 전송 (준비 중)', share, setShare],['자동 통과 알림','터널 진입·통과 시 보호자에게 자동 알림', auto, toggleAuto],['긴급 호출 위임','긴급 호출 시 보호자에게 즉시 연결 (준비 중)', emer, setEmer]].map(([l,s,v,set]) => (
               <div key={l} style={{ display:'flex', alignItems:'center', gap:14, padding:'14px 0', borderTop:'1px solid var(--border-light)' }}>
                 <div style={{ flex:1 }}>
                   <p style={{ fontSize:13.5, fontWeight:700, color:'var(--text-head)', marginBottom:2 }}>{l}</p>

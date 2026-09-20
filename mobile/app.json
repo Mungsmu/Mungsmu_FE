@@ -27,7 +27,8 @@
         {
           "locationWhenInUsePermission": "마음숨길이 현재 위치 기반 지도와 터널 알림을 제공하기 위해 위치 정보를 사용합니다."
         }
-      ]
+      ],
+      "expo-audio"
     ]
   }
 }
