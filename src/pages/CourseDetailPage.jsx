@@ -4,7 +4,6 @@ import { GRADE } from '../data/mock.js'
 import { fetchSafeCourses } from '../lib/tourApi.js'
 import MockStreetMap from '../components/MockStreetMap.jsx'
 
-const TYPE_BG = { '자연':'#E8F6EE','해변':'#E3F0F2','카페':'#FBF0D9','문화':'#EDE8F6','체험':'#F6EEE8','어촌':'#EBF0E8','역사':'#F6EEE0' }
 
 export default function CourseDetailPage() {
   const { id } = useParams()
@@ -91,10 +90,7 @@ export default function CourseDetailPage() {
           <div style={{ display:'flex', flexDirection:'column', gap:14, marginBottom:32 }}>
             {course.spots.map((s, i) => (
               <div key={s.name} style={{ display:'flex', gap:16, background:'var(--bg-surface)', border:'1px solid var(--border-light)', borderRadius:'var(--r-xl)', padding:16 }}>
-                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8, flexShrink:0 }}>
-                  <span style={{ width:24, height:24, borderRadius:'50%', background:'var(--primary)', color:'#fff', fontSize:12, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center' }}>{i+1}</span>
-                  <div style={{ width:72, height:60, borderRadius:8, background: TYPE_BG[s.type] ?? '#F0ECE2' }} />
-                </div>
+                <span style={{ width:24, height:24, borderRadius:'50%', background:'var(--primary)', color:'#fff', fontSize:12, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>{i+1}</span>
                 <div>
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:5 }}>
                     <span style={{ fontSize:15.5, fontWeight:800, color:'var(--text-head)' }}>{s.name}</span>

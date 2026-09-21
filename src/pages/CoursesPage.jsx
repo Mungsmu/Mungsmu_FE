@@ -130,7 +130,13 @@ export default function CoursesPage() {
                 onMouseEnter={e => { e.currentTarget.style.boxShadow='var(--shadow-sm)'; e.currentTarget.style.transform='translateY(-2px)' }}
                 onMouseLeave={e => { e.currentTarget.style.boxShadow='none'; e.currentTarget.style.transform='translateY(0)' }}
               >
-                <div style={{ height:130, background:'linear-gradient(135deg,#DCEBE9,#C0D8D2)' }} />
+                <div style={{ height:130, background:'linear-gradient(135deg,#DCEBE9,#C0D8D2)' }}>
+                  {c.thumbnail && (
+                    <img src={c.thumbnail} alt={c.title} loading="lazy"
+                      onError={e => { e.currentTarget.style.display = 'none' }}
+                      style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
+                  )}
+                </div>
                 <div style={{ padding:'18px 20px' }}>
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:8, gap:12 }}>
                     <div>
